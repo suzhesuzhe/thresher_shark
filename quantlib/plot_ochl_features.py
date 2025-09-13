@@ -1,7 +1,11 @@
 #%%
 import numpy as np
 import pandas as pd
+from pathlib import Path
+import re
 from bokeh.plotting import figure, show
+from bokeh.io import save
+from bokeh.resources import INLINE
 from bokeh.layouts import column, row
 from bokeh.models import (
     ColumnDataSource,
@@ -47,13 +51,18 @@ def plot_ohlc_basic(
     step_bars: int = 50,
     title: str = "OHLC",
     height: int = 620,
+    output_dir: str | Path = ".",
+    output_filename: str | None = None,
+    open_in_browser: bool = False,
 ) -> None:
     """
     Plot OHLC candlesticks with left/right scroll (fixed-size window) and auto y-range.
 
     - window_bars: number of bars visible at once
     - step_bars: bars to move per left/right click
-    - Opens a browser tab/window with interactive pan/zoom + buttons
+    - Saves a standalone HTML to `output_dir/output_filename` (defaults to
+      current folder with a name derived from title). Set `open_in_browser=True`
+      to also open after saving.
     """
     df_full = _ensure_datetime_index(plot_df)
     req = ["Open", "High", "Low", "Close"]
@@ -485,7 +494,16 @@ def plot_ohlc_basic(
             line_dash=dash_patterns[idx % len(dash_patterns)],
             legend_label=name,
         )
-    p.legend.click_policy = 'hide'
+    # Only set legend behavior if a legend exists
+    if getattr(p, 'legend', None):
+        try:
+            if isinstance(p.legend, list):
+                for lg in p.legend:
+                    lg.click_policy = 'hide'
+            else:
+                p.legend.click_policy = 'hide'
+        except Exception:
+            pass
 
     layout_children = [Div(text=f"<b>Window:</b> {window_bars} bars &nbsp; <b>Step:</b> {step_bars} bars"), pv, p]
 
@@ -514,7 +532,16 @@ def plot_ohlc_basic(
                 line_dash=dash_patterns[idx % len(dash_patterns)],
                 legend_label=name,
             )
-        p2.legend.click_policy = 'hide'
+        # Only set legend behavior if a legend exists
+        if getattr(p2, 'legend', None):
+            try:
+                if isinstance(p2.legend, list):
+                    for lg in p2.legend:
+                        lg.click_policy = 'hide'
+                else:
+                    p2.legend.click_policy = 'hide'
+            except Exception:
+                pass
         # autoscale
         if not aligned_separate_full.empty:
             vals2 = pd.to_numeric(aligned_separate_full.iloc[start_idx:end_idx + 1].stack(), errors='coerce')
@@ -539,7 +566,22 @@ def plot_ohlc_basic(
     layout_children.append(controls)
     layout = column(*layout_children, sizing_mode="stretch_width")
 
-    show(layout)
+    # Save to HTML (standalone)
+    outdir = Path(output_dir) if not isinstance(output_dir, Path) else output_dir
+    try:
+        outdir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # If directory cannot be created, fallback to current working directory
+        outdir = Path('.')
+    if not output_filename:
+        # Derive a safe filename from title
+        base = re.sub(r"[^A-Za-z0-9_-]+", "_", title.strip()) or "ohlc_plot"
+        output_filename = f"{base}.html"
+    outfile = outdir / output_filename
+    save(layout, filename=str(outfile), resources=INLINE, title=title)
+
+    if open_in_browser:
+        show(layout)
 
 
 

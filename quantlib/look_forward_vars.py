@@ -20,7 +20,7 @@ def log_return_forward(df: pd.DataFrame, n: int = 1) -> pd.Series:
     return out.rename(f"{n}")
 
 
-def profit_factor_forward(df: pd.DataFrame, n: int = 14, sigmoid: bool = False) -> pd.Series:
+def profit_factor_forward(df: pd.DataFrame, n: int = 14) -> pd.Series:
     """
     Forward Profit Factor (PF) for the next `n` bars.
 
@@ -40,21 +40,14 @@ def profit_factor_forward(df: pd.DataFrame, n: int = 14, sigmoid: bool = False) 
     c = pd.to_numeric(df["Close"], errors="coerce").astype("float64")
     d = c.diff()
     pos = d.clip(lower=0.0)
-    neg = (-d).clip(lower=0.0)
+    denom = d.abs().shift(-n).rolling(window=n, min_periods=n).sum()
+
 
     # Use forward-looking rolling sums by pre-shifting by -n
     pos_sum = pos.shift(-n).rolling(window=n, min_periods=n).sum()
-    neg_sum = neg.shift(-n).rolling(window=n, min_periods=n).sum()
-
-    with pd.option_context("mode.use_inf_as_na", False):
-        pf = pos_sum / neg_sum.replace(0.0, 0.0)
 
     # If both pos_sum and neg_sum are 0 -> set 0 (no movement window)
-    pf = pf.where(~((pos_sum == 0.0) & (neg_sum == 0.0)), other=0.0)
-
-    if sigmoid:
-        # Map [0, ∞) -> [0, 1) with neutral PF=1 -> 0.5
-        pf = pf / (1.0 + pf)
+    pf = 1.0 * pos_sum / denom
     return pf.rename(f"{n}")
 
 
