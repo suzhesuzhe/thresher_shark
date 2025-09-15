@@ -50,6 +50,55 @@ def pta_macd(
     return out
 
 
+
+# Moving Average Convergence Divergence (MACD) Scaled by ATR (customized)
+def macd_atr_scaled(
+    df: pd.DataFrame,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+    lag: int = 12,
+) -> pd.DataFrame:
+    """
+    MACD line, signal, and histogram scaled by ATR with lag
+    Returns a DataFrame with columns renamed to be parameter-explicit.
+    The first available computation will happen at the slow+lag+1 bar (first bar no true range)
+    When used with IndicatorPipeline(name="macd"), output columns become:
+    - line_<fast>_<slow>_{lag}_<signal>
+    - signal_<fast>_<slow>_{lag}_<signal>
+    - hist_<fast>_<slow>_{lag}_<signal>
+    """
+
+    ema_fast = pta.ema(close=df["Close"], length=fast)
+    ema_slow = pta.ema(close=df["Close"], length=slow)
+    
+
+    atr = pta.atr(close=df["Close"],
+              high = df["High"],
+              low = df["Low"], length=slow+lag)
+
+    ema_diff = ema_fast - ema_slow.shift(lag)
+    ema_normed_diff = ema_diff/atr/np.sqrt(0.5*(slow-fast)+lag)
+
+    macd_signal = pta.ema(close = ema_normed_diff, length=signal)
+    macd_hist = ema_normed_diff - macd_signal
+
+    out = pd.concat([ema_normed_diff, macd_signal, macd_hist], axis = 1)
+
+    if isinstance(out, pd.DataFrame):
+        cols = list(out.columns)
+        rename_map = {}
+        # pandas_ta returns columns typically like: MACD_12_26_9, MACDs_12_26_9, MACDh_12_26_9
+        # We normalize to line/signal/hist with explicit params
+        if len(cols) >= 1:
+            rename_map[cols[0]] = f"line_{fast}_{slow}_{lag}_{signal}"
+        if len(cols) >= 2:
+            rename_map[cols[1]] = f"signal_{fast}_{slow}_{lag}_{signal}"
+        if len(cols) >= 3:
+            rename_map[cols[2]] = f"hist_{fast}_{slow}_{lag}_{signal}"
+        return out.rename(columns=rename_map)
+    return out
+
 # Percentage Price Oscillator (PPO)
 def pta_ppo(
     df: pd.DataFrame,

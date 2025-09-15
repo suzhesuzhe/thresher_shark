@@ -71,21 +71,23 @@ doge_5min = agg_to_kmin(doge_1min, k=5)
 
 
 # %% Feature pipeline example
-# Build a small indicator set; add/remove specs as needed.
-
+# Loading required functions for building features
 from quantlib.var_pipeline import *
 from quantlib.look_forward_vars import *
 from quantlib.look_back_vars import *
 
 
+#%%
+# Build a small indicator set; add/remove specs as needed.
 
 lookback_specs = [
     # Trend
-    VariableSpec(name="sma", fn=pta_ema, params={"length": 14}),
+    VariableSpec(name="sma", fn=pta_sma, params={"length": 14}),
     VariableSpec(name="ema", fn=pta_ema, params={"length": 20}),
     VariableSpec(name="ema", fn=pta_ema, params={"length": 50}),
     VariableSpec(name="ema", fn=pta_ema, params={"length": 200}),
     VariableSpec(name="macd", fn=pta_macd, params={"fast": 12, "slow": 26, "signal": 9}),
+    VariableSpec(name="macd_scaled", fn=macd_atr_scaled, params={"fast": 12, "slow": 26, "signal": 9, "lag": 12}),
     VariableSpec(name="ppo", fn=pta_ppo, params={"fast": 12, "slow": 26, "signal": 9}),
     # Momentum
     VariableSpec(name="rsi", fn=pta_rsi, params={"length": 14}),
@@ -162,5 +164,6 @@ plot_df = pd.concat([doge_1min, lookback_doge_1min, lookforward_doge_1min], axis
 plot_ohlc_basic(plot_df, 
                 window_bars=300,
                 step_bars=120,
-                indicators={'pf_fwd_14':'separate'},
+                indicators={'pf_fwd_14':'separate'，
+                            'ema_20':'overlay'},
                 rules_dict=None)
