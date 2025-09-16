@@ -70,14 +70,14 @@ doge_5min = agg_to_kmin(doge_1min, k=5)
 
 
 
-# %% Feature pipeline example
+# %% 
 # Loading required functions for building features
 from quantlib.var_pipeline import *
 from quantlib.look_forward_vars import *
 from quantlib.look_back_vars import *
 
 
-#%%
+# %%
 # Build a small indicator set; add/remove specs as needed.
 
 lookback_specs = [
@@ -122,7 +122,6 @@ lookforward_pipeline = VariablePipeline(lookforward_specs, default_shift=1, defa
 # Compute features for a sample slice to illustrate usage
 lookback_doge_1min = lookback_pipeline.run(doge_1min)
 lookforward_doge_1min = lookforward_pipeline.run(doge_1min)
-
 lookback_doge_5min = lookback_pipeline.run(doge_5min)
 lookforward_doge_5min = lookforward_pipeline.run(doge_5min)
 
@@ -164,6 +163,6 @@ plot_df = pd.concat([doge_1min, lookback_doge_1min, lookforward_doge_1min], axis
 plot_ohlc_basic(plot_df, 
                 window_bars=300,
                 step_bars=120,
-                indicators={'pf_fwd_14':'separate'，
+                indicators={'pf_fwd_14':'separate',
                             'ema_20':'overlay'},
                 rules_dict=None)

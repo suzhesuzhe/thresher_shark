@@ -8,16 +8,14 @@ def pta_sma(
     df: pd.DataFrame,
     length: int = 14,
 ) -> pd.Series:
-    s = pta.sma(close=df["Close"], length=length)
-    return s.rename(f"{length}")
+    return pta.sma(close=df["Close"], length=length)
 
 # Moving Average (selectable mode via pandas_ta.ma)
 def pta_ema(
     df: pd.DataFrame,
     length: int = 14,
 ) -> pd.Series:
-    s = pta.ema(close=df["Close"], length=length)
-    return s.rename(f"{length}")
+    return pta.ema(close=df["Close"], length=length)
 
 # Moving Average Convergence Divergence (MACD)
 def pta_macd(
@@ -28,26 +26,8 @@ def pta_macd(
 ) -> pd.DataFrame:
     """
     MACD line, signal, and histogram using pandas_ta.
-    Returns a DataFrame with columns renamed to be parameter-explicit.
-    When used with IndicatorPipeline(name="macd"), output columns become:
-    - macd_line_<fast>_<slow>_<signal>
-    - macd_signal_<fast>_<slow>_<signal>
-    - macd_hist_<fast>_<slow>_<signal>
     """
-    out = pta.macd(close=df["Close"], fast=fast, slow=slow, signal=signal)
-    if isinstance(out, pd.DataFrame):
-        cols = list(out.columns)
-        rename_map = {}
-        # pandas_ta returns columns typically like: MACD_12_26_9, MACDs_12_26_9, MACDh_12_26_9
-        # We normalize to line/signal/hist with explicit params
-        if len(cols) >= 1:
-            rename_map[cols[0]] = f"line_{fast}_{slow}_{signal}"
-        if len(cols) >= 2:
-            rename_map[cols[1]] = f"signal_{fast}_{slow}_{signal}"
-        if len(cols) >= 3:
-            rename_map[cols[2]] = f"hist_{fast}_{slow}_{signal}"
-        return out.rename(columns=rename_map)
-    return out
+    return pta.macd(close=df["Close"], fast=fast, slow=slow, signal=signal)
 
 
 
@@ -84,20 +64,12 @@ def macd_atr_scaled(
     macd_hist = ema_normed_diff - macd_signal
 
     out = pd.concat([ema_normed_diff, macd_signal, macd_hist], axis = 1)
-
-    if isinstance(out, pd.DataFrame):
-        cols = list(out.columns)
-        rename_map = {}
-        # pandas_ta returns columns typically like: MACD_12_26_9, MACDs_12_26_9, MACDh_12_26_9
-        # We normalize to line/signal/hist with explicit params
-        if len(cols) >= 1:
-            rename_map[cols[0]] = f"line_{fast}_{slow}_{lag}_{signal}"
-        if len(cols) >= 2:
-            rename_map[cols[1]] = f"signal_{fast}_{slow}_{lag}_{signal}"
-        if len(cols) >= 3:
-            rename_map[cols[2]] = f"hist_{fast}_{slow}_{lag}_{signal}"
-        return out.rename(columns=rename_map)
-    return out
+    cols = list(out.columns)
+    rename_map = {}
+    rename_map[cols[0]] = f"MACD_scaled_{fast}_{slow}_{lag}_{signal}"
+    rename_map[cols[1]] = f"MACDs_scaled_{fast}_{slow}_{lag}_{signal}"
+    rename_map[cols[2]] = f"MACDh_scaled_{fast}_{slow}_{lag}_{signal}"
+    return out.rename(columns=rename_map)
 
 # Percentage Price Oscillator (PPO)
 def pta_ppo(
@@ -108,42 +80,15 @@ def pta_ppo(
 ) -> pd.DataFrame:
     """
     PPO line, signal, and histogram using pandas_ta.
-
-    Returns a DataFrame with columns renamed to:
-    - line_<fast>_<slow>_<signal>
-    - signal_<fast>_<slow>_<signal>
-    - hist_<fast>_<slow>_<signal>
-    When used with IndicatorPipeline(name="ppo") the final columns will be prefixed (e.g., ppo_line_12_26_9).
     """
-    out = pta.ppo(close=df["Close"], fast=fast, slow=slow, signal=signal)
-    if isinstance(out, pd.DataFrame):
-        cols = list(out.columns)
-        rename_map = {}
-        for c in cols:
-            lc = str(c).lower()
-            if "ppo" in lc and ("ppos" not in lc and "ppoh" not in lc):
-                rename_map[c] = f"line_{fast}_{slow}_{signal}"
-            elif "ppos" in lc or "signal" in lc:
-                rename_map[c] = f"signal_{fast}_{slow}_{signal}"
-            elif "ppoh" in lc or "hist" in lc:
-                rename_map[c] = f"hist_{fast}_{slow}_{signal}"
-        # Fallback by position if detection missed
-        if not rename_map and len(cols) >= 1:
-            rename_map[cols[0]] = f"line_{fast}_{slow}_{signal}"
-            if len(cols) >= 2:
-                rename_map[cols[1]] = f"signal_{fast}_{slow}_{signal}"
-            if len(cols) >= 3:
-                rename_map[cols[2]] = f"hist_{fast}_{slow}_{signal}"
-        return out.rename(columns=rename_map)
-    return out
+    return pta.ppo(close=df["Close"], fast=fast, slow=slow, signal=signal)
 
 #RSI
 def pta_rsi(
     df: pd.DataFrame,
     length: int = 14
 ) -> pd.Series:
-    s = pta.rsi(close=df["Close"], length=length)
-    return s.rename(f"{length}")
+    return pta.rsi(close=df["Close"], length=length)
 
 
 
@@ -154,18 +99,7 @@ def pta_bbands(
     length: int = 20,
     std: float = 2.0
 ) -> pd.DataFrame:
-    out = pta.bbands(close=df["Close"], length=length, std=std)
-    if isinstance(out, pd.DataFrame):
-        cols = list(out.columns)
-        rename_map = {}
-        if len(cols) >= 1:
-            rename_map[cols[0]] = f"lower_{length}_{std}"
-        if len(cols) >= 2:
-            rename_map[cols[1]] = f"mid_{length}_{std}"
-        if len(cols) >= 3:
-            rename_map[cols[2]] = f"upper_{length}_{std}"
-        return out.rename(columns=rename_map)
-    return out
+    return pta.bbands(close=df["Close"], length=length, std=std)
 
 
 #Actual True Range(ATR)
@@ -173,8 +107,7 @@ def pta_atr(
     df: pd.DataFrame,
     length: int = 14
 ) -> pd.Series:
-    atr = pta.atr(high=df["High"], low=df["Low"], close=df["Close"], length=length).rename(f"{length}")
-    return atr
+    return pta.atr(high=df["High"], low=df["Low"], close=df["Close"], length=length)
 
 
 # Money Flow Index (MFI)
@@ -192,8 +125,7 @@ def pta_mfi(
     low = pd.to_numeric(df["Low"], errors="coerce").astype("float64")
     close = pd.to_numeric(df["Close"], errors="coerce").astype("float64")
     volume = pd.to_numeric(df["Volume"], errors="coerce").astype("float64")
-    s = pta.mfi(high=high, low=low, close=close, volume=volume, length=length)
-    return s.astype("float64").rename(f"{length}")
+    return  pta.mfi(high=high, low=low, close=close, volume=volume, length=length)
 
 
 # Custom MFI implementation (avoids dtype issues and external dependencies)
@@ -225,7 +157,7 @@ def mfi_custom(
     nmf = neg.rolling(length, min_periods=length).sum()
     mfr = pmf / nmf.replace(0.0, np.nan)
     out = 100.0 - (100.0 / (1.0 + mfr))
-    return out.rename(f"{length}").astype("float64")
+    return out.rename(f"MFI_{length}").astype("float64")
 
 
 # Rate of Change (ROC)
@@ -233,8 +165,7 @@ def pta_roc(
     df: pd.DataFrame,
     length: int = 10,
 ) -> pd.Series:
-    s = pta.roc(close=df["Close"], length=length)
-    return s.rename(f"{length}")
+    return pta.roc(close=df["Close"], length=length)
 
 
 # Bollinger Band Width (BBW)
@@ -257,15 +188,14 @@ def pta_bbw(
     if normalize:
         with pd.option_context('mode.use_inf_as_na', True):
             width = width / mid.replace(0, pd.NA)
-    return width.rename(f"{length}_{std}")
+    return width.rename(f"BBandWidth_{length}_{std}")
 
 
 # On-Balance Volume (OBV)
 def pta_obv(
     df: pd.DataFrame,
 ) -> pd.Series:
-    s = pta.obv(close=df["Close"], volume=df["Volume"])
-    return s.rename("obv")
+    return pta.obv(close=df["Close"], volume=df["Volume"])
 
 
 # Multi-horizon returns
@@ -280,7 +210,7 @@ def returns_multi(
     close = pd.to_numeric(df["Close"], errors="coerce")
     out = {}
     for h in horizons:
-        out[f"{h}"] = close.pct_change(h)
+        out[f"ret_{h}"] = close.pct_change(h)
     return pd.DataFrame(out, index=df.index)
 
 
@@ -290,8 +220,8 @@ def returns_rolling_moments(
     window: int = 20,
 ) -> pd.DataFrame:
     r = pd.to_numeric(df["Close"], errors="coerce").pct_change()
-    skew = r.rolling(window).skew().rename(f"skew_{window}")
-    kurt = r.rolling(window).kurt().rename(f"kurt_{window}")
+    skew = r.rolling(window).skew().rename(f"ret_skew_{window}")
+    kurt = r.rolling(window).kurt().rename(f"ret_kurt_{window}")
     return pd.concat([skew, kurt], axis=1)
 
 
@@ -310,7 +240,7 @@ def returns_autocorr(
     std_x = x.rolling(window).std(ddof=0)
     std_y = y.rolling(window).std(ddof=0)
     corr = cov / (std_x * std_y)
-    return corr.rename(f"autocorr_{lag}_{window}")
+    return corr.rename(f"ret_autocorr_{lag}_{window}")
 
 
 #Stochastic Oscillator (STOCH)
@@ -320,16 +250,7 @@ def pta_stoch(
     d: int = 3,
     smooth_k: int = 3
 ) -> pd.DataFrame:
-    out = pta.stoch(high=df["High"], low=df["Low"], close=df["Close"], k=k, d=d, smooth_k=smooth_k)
-    if isinstance(out, pd.DataFrame):
-        cols = list(out.columns)
-        rename_map = {}
-        if len(cols) >= 1:
-            rename_map[cols[0]] = f"k_{k}_{d}_{smooth_k}"
-        if len(cols) >= 2:
-            rename_map[cols[1]] = f"d_{k}_{d}_{smooth_k}"
-        return out.rename(columns=rename_map)
-    return out
+    return pta.stoch(high=df["High"], low=df["Low"], close=df["Close"], k=k, d=d, smooth_k=smooth_k)
 
 
 # Stochastic RSI (StochRSI)
@@ -342,21 +263,9 @@ def pta_stochrsi(
 ) -> pd.DataFrame:
     """
     Stochastic RSI using pandas_ta.stochrsi.
-
-    Returns a DataFrame with normalized column names:
-    - srsi_k_<length>_<rsi_length>_<k>_<d>
-    - srsi_d_<length>_<rsi_length>_<k>_<d>
     """
-    out = pta.stochrsi(close=df["Close"], length=length, rsi_length=rsi_length, k=k, d=d)
-    if isinstance(out, pd.DataFrame):
-        cols = list(out.columns)
-        rename_map = {}
-        if len(cols) >= 1:
-            rename_map[cols[0]] = f"k_{length}_{rsi_length}_{k}_{d}"
-        if len(cols) >= 2:
-            rename_map[cols[1]] = f"d_{length}_{rsi_length}_{k}_{d}"
-        return out.rename(columns=rename_map)
-    return out
+    return pta.stochrsi(close=df["Close"], length=length, rsi_length=rsi_length, k=k, d=d)
+    
 
 # Average Directional Index (ADX) with +DI and -DI
 def pta_adx(
@@ -371,18 +280,6 @@ def pta_adx(
     - di_plus_<length>
     - di_minus_<length>
     """
-    out = pta.adx(high=df["High"], low=df["Low"], close=df["Close"], length=length)
-    if isinstance(out, pd.DataFrame):
-        rename_map = {}
-        for c in list(out.columns):
-            lc = str(c).lower()
-            if "adx" in lc:
-                rename_map[c] = f"{length}"
-            elif "dmp" in lc or "+di" in lc or "pdi" in lc or "plus" in lc:
-                rename_map[c] = f"di_plus_{length}"
-            elif "dmn" in lc or "-di" in lc or "mdi" in lc or "minus" in lc:
-                rename_map[c] = f"di_minus_{length}"
-        return out.rename(columns=rename_map)
-    return out
+    return pta.adx(high=df["High"], low=df["Low"], close=df["Close"], length=length)
 
 

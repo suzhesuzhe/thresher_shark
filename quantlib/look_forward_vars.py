@@ -17,7 +17,7 @@ def log_return_forward(df: pd.DataFrame, n: int = 1) -> pd.Series:
     """
     c = pd.to_numeric(df["Close"], errors="coerce").astype("float64")
     out = np.log(c.shift(-n) / c)
-    return out.rename(f"{n}")
+    return out.rename(f"LOGRET_{n}")
 
 
 def profit_factor_forward(df: pd.DataFrame, n: int = 14) -> pd.Series:
@@ -48,7 +48,7 @@ def profit_factor_forward(df: pd.DataFrame, n: int = 14) -> pd.Series:
 
     # If both pos_sum and neg_sum are 0 -> set 0 (no movement window)
     pf = 1.0 * pos_sum / denom
-    return pf.rename(f"{n}")
+    return pf.rename(f"PF_{n}")
 
 
 def return_over_variance_forward(df: pd.DataFrame, n: int = 14) -> pd.Series:
@@ -76,7 +76,7 @@ def return_over_variance_forward(df: pd.DataFrame, n: int = 14) -> pd.Series:
 
     pf = numer / denom
     pf = pf.where(denom != 0.0, other=0.0)
-    return pf.rename(f"{n}")
+    return pf.rename(f"ROV_{n}")
 
 
 
@@ -120,4 +120,4 @@ def forward_directional_index(df: pd.DataFrame, n: int = 14) -> pd.Series:
     numer = plus_sum - minus_sum
     fdi = numer / denom
     fdi = fdi.where(denom != 0.0, other=0.0)
-    return fdi.rename(f"{n}")
+    return fdi.rename(f"FDI_{n}")

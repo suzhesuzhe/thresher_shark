@@ -14,7 +14,7 @@ class VariableSpec:
     """
     Defines one indicator to compute.
 
-    - name: base name; final columns are always "{name}_{col}"
+    - name: base name used for bookkeeping (column naming now comes from fn)
     - fn: callable accepting (df, **params) -> pd.Series | pd.DataFrame
     - params: kwargs forwarded to fn
     - shift: bars to shift output to prevent leakage (None => pipeline default)
@@ -36,9 +36,9 @@ class VariablePipeline:
     - Works with single- or multi-symbol data (MultiIndex with a 'symbol' level recommended).
     - Shifts outputs by default to avoid target leakage.
     - Returns a separate, aligned features DataFrame (raw OHLCV remains unchanged).
-    - Column naming: for both Series and DataFrame outputs, final columns are
-      always named as f"{spec.name}_{original_column_name}". For Series without
-      a name, the suffix defaults to "value".
+    - Column naming: fns are responsible for naming their outputs. For Series
+      without a name, the spec name is used as a fallback to avoid anonymous
+      columns.
     """
 
     def __init__(
@@ -105,16 +105,22 @@ class VariablePipeline:
             dtype = self.default_dtype if spec.dtype is None else spec.dtype
 
             if isinstance(out, pd.Series):
-                suffix = out.name if out.name is not None else "value"
-                s = out.rename(f"{spec.name}_{suffix}")
+                col_name = out.name if out.name is not None else spec.name
+                s = out.rename(col_name)
                 if shift:
                     s = s.shift(shift)
                 s = s.astype(dtype)
                 outputs.append(s.to_frame())
             elif isinstance(out, pd.DataFrame):
                 df_out = out.copy()
-                # Always prefix each column with the spec name
-                df_out.columns = [f"{spec.name}_{c}" for c in df_out.columns]
+                if any(c is None or c == "" for c in df_out.columns):
+                    # Provide deterministic fallback for anonymous columns.
+                    fallback_cols = {
+                        c: f"{spec.name}_{idx}"
+                        for idx, c in enumerate(df_out.columns)
+                        if c is None or c == ""
+                    }
+                    df_out = df_out.rename(columns=fallback_cols)
                 if shift:
                     df_out = df_out.shift(shift)
                 df_out = df_out.astype(dtype)
@@ -127,4 +133,3 @@ class VariablePipeline:
         if not outputs:
             return pd.DataFrame(index=df.index)
         return pd.concat(outputs, axis=1)
-
