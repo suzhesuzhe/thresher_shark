@@ -122,14 +122,14 @@ lookforward_pipeline = VariablePipeline(lookforward_specs, default_shift=1, defa
 # Compute features for a sample slice to illustrate usage
 lookback_doge_1min = lookback_pipeline.run(doge_1min)
 lookforward_doge_1min = lookforward_pipeline.run(doge_1min)
-lookback_doge_5min = lookback_pipeline.run(doge_5min)
-lookforward_doge_5min = lookforward_pipeline.run(doge_5min)
+#lookback_doge_5min = lookback_pipeline.run(doge_5min)
+#lookforward_doge_5min = lookforward_pipeline.run(doge_5min)
 
 
-lookback_doge_1min.to_csv('./DATA/doge_1min_lookback.csv')
-lookforward_doge_1min.to_csv('./DATA/doge_1min_lookforward.csv')
-lookback_doge_5min.to_csv('./DATA/doge_5min_lookback.csv')
-lookforward_doge_5min.to_csv('./DATA/doge_5min_lookforward.csv')
+#lookback_doge_1min.to_csv('./DATA/doge_1min_lookback.csv')
+#lookforward_doge_1min.to_csv('./DATA/doge_1min_lookforward.csv')
+#lookback_doge_5min.to_csv('./DATA/doge_5min_lookback.csv')
+#lookforward_doge_5min.to_csv('./DATA/doge_5min_lookforward.csv')
 
 
 

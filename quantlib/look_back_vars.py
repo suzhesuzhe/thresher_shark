@@ -198,30 +198,14 @@ def pta_obv(
     return pta.obv(close=df["Close"], volume=df["Volume"])
 
 
-# Multi-horizon returns
-def returns_multi(
-    df: pd.DataFrame,
-    horizons: list[int] | None = None,
-) -> pd.DataFrame:
-    """
-    Percentage returns over multiple horizons (bars).
-    """
-    horizons = horizons or [1, 5, 20]
-    close = pd.to_numeric(df["Close"], errors="coerce")
-    out = {}
-    for h in horizons:
-        out[f"ret_{h}"] = close.pct_change(h)
-    return pd.DataFrame(out, index=df.index)
-
-
 # Rolling skew and kurtosis of 1-bar returns
 def returns_rolling_moments(
     df: pd.DataFrame,
     window: int = 20,
 ) -> pd.DataFrame:
     r = pd.to_numeric(df["Close"], errors="coerce").pct_change()
-    skew = r.rolling(window).skew().rename(f"ret_skew_{window}")
-    kurt = r.rolling(window).kurt().rename(f"ret_kurt_{window}")
+    skew = r.rolling(window).skew().rename(f"RET_skew_{window}")
+    kurt = r.rolling(window).kurt().rename(f"RET_kurt_{window}")
     return pd.concat([skew, kurt], axis=1)
 
 
@@ -240,7 +224,7 @@ def returns_autocorr(
     std_x = x.rolling(window).std(ddof=0)
     std_y = y.rolling(window).std(ddof=0)
     corr = cov / (std_x * std_y)
-    return corr.rename(f"ret_autocorr_{lag}_{window}")
+    return corr.rename(f"RET_autocorr_{lag}_{window}")
 
 
 #Stochastic Oscillator (STOCH)
@@ -281,5 +265,15 @@ def pta_adx(
     - di_minus_<length>
     """
     return pta.adx(high=df["High"], low=df["Low"], close=df["Close"], length=length)
+
+
+# Price intensity
+def p_intensity(
+    df: pd.DataFrame,
+    length: int = 14,
+) -> pd.Series:
+    raw_out = (df["Close"] - df["Open"]) / pta.atr(high=df["High"], low=df["Low"], close=df["Close"], length=1)
+    out = pta.ema(close=raw_out, length=length)
+    return out.rename(f"P_intensity_{length}")
 
 
