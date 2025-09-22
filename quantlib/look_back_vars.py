@@ -1,3 +1,5 @@
+
+
 import pandas as pd
 import numpy as np
 import pandas_ta as pta
@@ -275,5 +277,91 @@ def p_intensity(
     raw_out = (df["Close"] - df["Open"]) / pta.atr(high=df["High"], low=df["Low"], close=df["Close"], length=1)
     out = pta.ema(close=raw_out, length=length)
     return out.rename(f"P_intensity_{length}")
+
+
+
+def pta_aroon(
+    df: pd.DataFrame,
+    length: int = 25,
+) -> pd.DataFrame:
+    """
+    Aroon indicator using pandas_ta.
+
+    Returns a DataFrame with columns:
+    - AROON_UP_<length>
+    - AROON_DOWN_<length>
+    """
+    out = pta.aroon(high=df["High"], low=df["Low"], length=length)
+    # Rename columns for consistency
+    out = out.rename(columns={
+        f"AROONU_{length}": f"AROON_UP_{length}",
+        f"AROOND_{length}": f"AROON_DOWN_{length}"
+    })
+    return out
+
+
+def legendre_trend_r2_atr_scaled(
+    df: pd.DataFrame,
+    lookback: int = 20,
+    atr_long: int = 100,
+    price_col: str = "Close"
+) -> pd.DataFrame:
+    """
+    Linear-trend indicator based on first-order Legendre regression of log-price,
+    scaled by long-term ATR and weighted by R² fit.
+
+    Returns a DataFrame with one column:
+    - legendre_trend_<lookback>_<atr_long>
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain columns [Open, High, Low, Close] (or specify `price_col`).
+    lookback : int
+        Number of bars in the regression window.
+    atr_long : int
+        Lookback for long-term ATR used for volatility scaling.
+    price_col : str
+        Column to use for prices (default "Close").
+    """
+
+    # --- Precompute first-order Legendre polynomial coefficients for [-1,1] ---
+    x = np.linspace(-1, 1, lookback)
+    # normalized so dot gives slope*2/(lookback-1) (as regressed on [-1,1])
+    legendre1 = x / np.sum(x**2) * 2  
+
+
+    # --- Prepare log prices ---
+    log_price = np.log(df[price_col])
+
+    # Rolling dot product: slope in log space
+    # Each value is 2 * slope / (lookback - 1)
+    def legendre_slope(series):
+        return np.dot(series.values, legendre1)
+
+    raw_slope = log_price.rolling(lookback).apply(legendre_slope, raw=False)
+
+    # --- Compute R² for each window ---
+    def r2(series):
+        y = series.values
+        y_hat = np.dot(y, legendre1) * x / 2 + y.mean()
+        ss_res = np.sum((y - y_hat)**2)
+        ss_tot = np.sum((y - y.mean())**2)
+        return 1 - ss_res / ss_tot if ss_tot > 0 else 0
+
+    r2_score = log_price.rolling(lookback).apply(r2, raw=False)
+
+    # --- Long-term ATR for volatility scaling (normalize by current price) ---
+    atr = pta.atr(
+        high=df["High"], low=df["Low"], close=df["Close"], length=atr_long
+    )
+    atr_fraction = atr / df[price_col]
+
+    # --- Final indicator: R² × slope / ATRfraction ---
+    trend = r2_score * raw_slope / atr_fraction
+
+    out = trend.to_frame(name=f"legendre_trend_{lookback}_{atr_long}")
+    return out
+
 
 
