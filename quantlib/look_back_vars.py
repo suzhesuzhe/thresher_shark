@@ -3,6 +3,7 @@
 import pandas as pd
 import numpy as np
 import pandas_ta as pta
+from scipy.stats import norm
 
 
 # Moving Average (selectable mode via pandas_ta.ma)
@@ -362,6 +363,155 @@ def legendre_trend_r2_atr_scaled(
 
     out = trend.to_frame(name=f"legendre_trend_{lookback}_{atr_long}")
     return out
+
+
+def cmma(
+    df: pd.DataFrame,
+    n: int = 20,
+    c: float = 1.0,
+    atr_length: int = 14,
+) -> pd.Series:
+    """
+    Close Minus Moving Average (CMMA) indicator.
+    
+    Formula: CMMA_t^(n) = 100 × Φ(C ⋅ (log C_t - Σ_{i=1}^{n} log C_{t-i}) / (ATR_t ⋅ √(n + 1))) - 50
+    
+    Where:
+    - Φ is the cumulative distribution function of the standard normal distribution
+    - C is a constant multiplier (default 1.0)
+    - log C_t is the natural logarithm of the Close price at time t
+    - Σ_{i=1}^{n} log C_{t-i} is the sum of log Close prices for the previous n periods
+    - ATR_t is the Average True Range at time t
+    - √(n + 1) is the square root of n + 1
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain columns [Open, High, Low, Close].
+    n : int
+        Number of periods for the moving average calculation (default 20).
+    c : float
+        Constant multiplier in the formula (default 1.0).
+    atr_length : int
+        Length for ATR calculation (default 14).
+    
+    Returns
+    -------
+    pd.Series
+        CMMA values with name "CMMA_<n>_<c>_<atr_length>".
+    """
+    
+    # Calculate log of close prices
+    log_close = np.log(df["Close"])
+    
+    # Calculate mean of log close prices for previous n periods
+    # Shift first, then calculate rolling mean to get mean of previous n periods only
+    log_close_mean = log_close.shift(1).rolling(window=n, min_periods=n).mean()
+    
+    # Calculate the numerator: log C_t - mean of log C_{t-i} for i=1 to n
+    numerator = log_close - log_close_mean
+    
+    # Calculate ATR
+    atr = pta.atr(high=df["High"], low=df["Low"], close=df["Close"], length=atr_length)
+    
+    # Calculate the denominator: ATR_t ⋅ √(n + 1)
+    denominator = atr * np.sqrt(n + 1)
+    
+    # Calculate the argument for the normal CDF
+    
+    argument = c *numerator / denominator
+    
+    # Apply the normal CDF (Φ) and scale
+    # argument is a pandas Series, norm.cdf will work elementwise and return a numpy array of same shape
+    cmma_values = 100 * norm.cdf(argument.values) - 50
+    cmma_values = pd.Series(cmma_values, index=argument.index)
+    
+    return cmma_values.rename(f"CMMA_{n}_{c}_{atr_length}")
+
+
+def diff_close_legendre_fit(
+    df: pd.DataFrame,
+    n: int = 20,
+) -> pd.Series:
+    """
+    Polynomial regression indicator using Legendre polynomials.
+    
+    Fits a polynomial regression of degree `degree` to the last `n` close prices
+    and returns the normalized deviation of current price from the fitted value.
+    
+    Formula: (current_price - fitted_current_price) / RMSE
+    
+    Where:
+    - Fits polynomial regression using Legendre polynomials on x ∈ [-1, 1]
+    - RMSE is the root mean square error of the regression
+    - Current price deviation is normalized by the regression's RMSE
+    
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain the price column (default "Close").
+    n : int
+        Number of bars to look back for regression (default 20).
+    
+    Returns
+    -------
+    pd.Series
+        Polynomial regression indicator values with name "poly_reg_<n>_<degree>".
+    """
+    
+    # Prepare price data
+    prices = df['Close'].astype(float)
+    
+    # Create x values as linear space from -1 to 1 (same as legendre_trend_r2_atr_scaled)
+    x = np.linspace(-1, 1, n)
+    
+    # Precompute Legendre polynomial basis functions
+    # For degree 1, 2, 3: linear, quadratic, cubic
+    basis_1 = x
+    # Quadratic: P2(x) = (3x² - 1) / 2
+    basis_2 = (3 * x**2 - 1) / 2
+    # Cubic: P3(x) = (5x³ - 3x) / 2
+    basis_3 = (5 * x**3 - 3 * x) / 2
+    
+    # Create design matrix X
+    X = np.column_stack([np.ones(n), basis_1, basis_2, basis_3])
+
+    
+    # Calculate (X'X)^(-1)X' for efficient regression
+    XtX_inv = np.linalg.inv(X.T @ X)
+    XtX_inv_Xt = XtX_inv @ X.T
+    
+    def polynomial_regression_rolling(price_window):
+        """Apply polynomial regression to a window of prices."""
+        if len(price_window) < n or price_window.isna().any():
+            return np.nan
+        
+        y = price_window.values
+        
+        # Fit regression: coefficients = (X'X)^(-1)X'y
+        coeffs = XtX_inv_Xt @ y
+        
+        # Calculate fitted values
+        y_fitted = X @ coeffs
+        
+        # Calculate RMSE
+        residuals = y - y_fitted
+        rmse = np.sqrt(np.mean(residuals**2))
+        
+        # Current price deviation (last element)
+        current_deviation = y[-1] - y_fitted[-1]
+        
+        # Return normalized deviation
+        if rmse == 0:
+            return 0
+        return current_deviation / rmse
+    
+    # Apply rolling regression
+    result = prices.rolling(window=n, min_periods=n).apply(
+        polynomial_regression_rolling, raw=False
+    )
+    
+    return result.rename(f"poly_reg_{n}")
 
 
 

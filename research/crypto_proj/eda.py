@@ -65,7 +65,7 @@ doge_intraday_processed_fill.to_csv('./DATA/doge_OHCL_1m_20230915_20250911_proce
 # If needed, aggregate 1min bar data to kmin bar data
 from quantlib.utils import agg_to_kmin
 doge_1min = pd.read_csv('./DATA/doge_intraday_processed_fill.csv', index_col=0, parse_dates=True)
-doge_5min = agg_to_kmin(doge_1min, k=5)
+#doge_5min = agg_to_kmin(doge_1min, k=5)
 
 
 
@@ -89,9 +89,15 @@ lookback_specs = [
     VariableSpec(name="macd", fn=pta_macd, params={"fast": 12, "slow": 26, "signal": 9}),
     VariableSpec(name="macd_scaled", fn=macd_atr_scaled, params={"fast": 12, "slow": 26, "signal": 9, "lag": 12}),
     VariableSpec(name="ppo", fn=pta_ppo, params={"fast": 12, "slow": 26, "signal": 9}),
+    # Past returns
+    VariableSpec(name="roc", fn=pta_roc, params={"length": 1}),
+    VariableSpec(name="roc", fn=pta_roc, params={"length": 5}),
+    VariableSpec(name="roc", fn=pta_roc, params={"length": 10}),
+    VariableSpec(name="roc", fn=pta_roc, params={"length": 20}),
+    VariableSpec(name="ret_moments", fn=returns_rolling_moments, params={"window": 20}),
+    VariableSpec(name="ret_autocorr", fn=returns_autocorr, params={"lag": 1, "window": 100}),
     # Momentum
     VariableSpec(name="rsi", fn=pta_rsi, params={"length": 14}),
-    VariableSpec(name="roc", fn=pta_roc, params={"length": 10}),
     VariableSpec(name="stoch", fn=pta_stoch, params={"k": 14, "d": 3, "smooth_k": 3}),
     VariableSpec(name="stochrsi", fn=pta_stochrsi, params={"length": 14, "rsi_length": 14, "k": 3, "d": 3}),
     VariableSpec(name="adx", fn=pta_adx, params={"length": 14}),
@@ -101,10 +107,10 @@ lookback_specs = [
     # Volume
     VariableSpec(name="obv", fn=pta_obv, params={} ),
     VariableSpec(name="mfi", fn=mfi_custom, params={"length": 14}),
-    # Engineered
-    VariableSpec(name="roc", fn=returns_multi, params={"horizons": [1, 5, 20]}),
-    VariableSpec(name="ret_moments", fn=returns_rolling_moments, params={"window": 20}),
-    VariableSpec(name="ret_autocorr", fn=returns_autocorr, params={"lag": 1, "window": 100}),
+    #Customized
+    VariableSpec(name="diff_close_legendre_fit", fn=diff_close_legendre_fit, params={"n": 20}),
+    VariableSpec(name="cmma", fn=cmma, params={"n": 20, "c": 0.5, "atr_length": 14}), 
+    VariableSpec(name="legendre_trend_r2_atr_scaled", fn=legendre_trend_r2_atr_scaled, params={"lookback": 20, "atr_long": 100, "price_col": "Close"}),
 ]
 
 lookback_pipeline = VariablePipeline(lookback_specs, default_shift=1, default_dtype="float32")
