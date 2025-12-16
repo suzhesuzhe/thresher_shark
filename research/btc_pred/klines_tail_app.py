@@ -1,11 +1,13 @@
 
-#bokeh serve --show klines_tail_app.py --args \
-#    --minibar DATA/organized/BTCUSDT/klines_1m.csv \
-#    --agg-trades DATA/organized/BTCUSDT/aggTrades.parquet \
-#    --ema-window 20 \
-#    --left-tail 0.0 \
-#    --right-tail 0.025
 
+'''
+bokeh serve --show klines_tail_app.py --args \
+    --minibar DATA/organized/BTCUSDT/klines_1m_with_events.csv \
+    --agg-trades DATA/organized/BTCUSDT/aggTrades.parquet \
+    --value-column first_bool_colname \
+    --value-column second_bool_colname \
+    --ema-window 20
+'''
 
 from __future__ import annotations
 
@@ -33,17 +35,19 @@ from bokeh.plotting import figure
 
 MINUTE_DELTA = pd.Timedelta(minutes=1)
 MINUTE_HALF = MINUTE_DELTA / 2
+BAR_WIDTH = MINUTE_DELTA * 0.8
+BAR_WIDTH_MS = int(BAR_WIDTH.total_seconds() * 1000)
+SELECTION_MARKERS = ["circle", "triangle"]
+SELECTION_COLORS = ["#FFD700", "#26A69A"]
 
 
 def prepare_minibar_dataset(
     minibar: pd.DataFrame,
     *,
-    value_column: str | None,
-    left_tail_p: float,
-    right_tail_p: float,
+    value_columns: list[str],
     ema_window: int | None,
     require_volume: bool = True,
-) -> tuple[pd.DataFrame, pd.Series, pd.Series, list[int]]:
+) -> tuple[pd.DataFrame, list[dict[str, object]], list[int]]:
     required_cols = {"open", "high", "low", "close"}
     volume_cols = {"buy_volume", "sell_volume"}
     if require_volume:
@@ -51,12 +55,9 @@ def prepare_minibar_dataset(
     if not required_cols.issubset(minibar.columns):
         missing = required_cols - set(minibar.columns)
         raise ValueError(f"minibar is missing columns: {missing}")
-    if value_column is not None and value_column not in minibar.columns:
-        raise ValueError(f"{value_column} column not found.")
-    if not 0 <= left_tail_p < 0.5:
-        raise ValueError("left_tail_p must be between 0 and 0.5.")
-    if not 0 <= right_tail_p < 0.5:
-        raise ValueError("right_tail_p must be between 0 and 0.5.")
+    for col in value_columns:
+        if col not in minibar.columns:
+            raise ValueError(f"{col} column not found.")
     if ema_window is not None and ema_window <= 0:
         raise ValueError("ema_window must be positive when provided.")
 
@@ -74,15 +75,23 @@ def prepare_minibar_dataset(
     base["ts_center"] = base["ts"] + MINUTE_HALF
     base["mid_price"] = (base["open"] + base["close"]) / 2
 
-    if value_column is not None:
-        lower = base[value_column].quantile(left_tail_p) if left_tail_p > 0 else None
-        upper = base[value_column].quantile(1 - right_tail_p) if right_tail_p > 0 else None
-        lower_mask = base[value_column] <= lower if lower is not None else pd.Series(False, index=base.index)
-        upper_mask = base[value_column] >= upper if upper is not None else pd.Series(False, index=base.index)
-    else:
-        lower = upper = None
-        lower_mask = pd.Series(False, index=base.index)
-        upper_mask = pd.Series(False, index=base.index)
+    selection_meta: list[dict[str, object]] = []
+    combined_mask = pd.Series(False, index=base.index)
+    for idx, col in enumerate(value_columns):
+        mask = base[col].fillna(False).astype(bool)
+        size_field = f"selection_{idx}_size"
+        alpha_field = f"selection_{idx}_alpha"
+        base[size_field] = np.where(mask, 9, 0)
+        base[alpha_field] = 0.8 * mask.to_numpy()
+        combined_mask = combined_mask | mask
+        selection_meta.append(
+            {
+                "name": col,
+                "size_field": size_field,
+                "alpha_field": alpha_field,
+                "count": int(mask.sum()),
+            }
+        )
 
     if ema_window is not None:
         base["ema"] = base["close"].ewm(span=ema_window, adjust=False).mean()
@@ -91,22 +100,18 @@ def prepare_minibar_dataset(
     base["bar_top"] = base[["open", "close"]].max(axis=1)
     base["bar_bottom"] = base[["open", "close"]].min(axis=1)
     base["bar_color"] = np.where(base["close"] >= base["open"], "#4CAF50", "#F44336")
-    base["tail_alpha"] = 0.8 * (lower_mask | upper_mask).to_numpy()
-    base["tail_size"] = np.where(lower_mask | upper_mask, 9, 0)
-    base["is_tail"] = (lower_mask | upper_mask).to_numpy()
+    base["is_tail"] = combined_mask.to_numpy()
     base["tail_marker"] = base["high"] + (base["high"] - base["low"]) * 0.05
     sample_positions = np.flatnonzero(base["is_tail"]).tolist()
-    return base, lower_mask, upper_mask, sample_positions
+    return base, selection_meta, sample_positions
 
 
 @dataclass
 class TailAppConfig:
     minibar_path: Path
     agg_trades_path: Path
-    value_column: Optional[str]
+    value_columns: tuple[str, ...]
     ema_window: Optional[int]
-    left_tail_p: float
-    right_tail_p: float
     window_bars: int
     step_bars: int
     context_bars: int
@@ -213,14 +218,14 @@ def _event_ts(value: float) -> Optional[pd.Timestamp]:
 def build_tail_layout(config: TailAppConfig):
     minibar = _load_minibar_frame(config.minibar_path)
     loader = AggTradeLoader(config.agg_trades_path)
-    base, lower_mask, upper_mask, sample_positions = prepare_minibar_dataset(
+    base, selection_meta, sample_positions = prepare_minibar_dataset(
         minibar,
-        value_column=config.value_column,
-        left_tail_p=config.left_tail_p,
-        right_tail_p=config.right_tail_p,
+        value_columns=list(config.value_columns),
         ema_window=config.ema_window,
         require_volume=False,
     )
+    ts_numeric = base["ts"].astype("int64").to_numpy()
+    ts_center_numeric = base["ts_center"].astype("int64").to_numpy()
 
     total_len = len(base)
     if total_len == 0:
@@ -237,9 +242,16 @@ def build_tail_layout(config: TailAppConfig):
     context_df = base.iloc[context_start : context_start + context_window]
     context_source = ColumnDataSource(context_df)
     tail_cols = ["ts_center", "low", "high", "tail_marker"]
-    context_tail_source = ColumnDataSource(
-        _cds_payload(context_df.loc[context_df["is_tail"], tail_cols], tail_cols)
-    )
+    context_selection_sources: list[ColumnDataSource] = []
+    for idx, meta in enumerate(selection_meta):
+        color = SELECTION_COLORS[idx % len(SELECTION_COLORS)]
+        marker = SELECTION_MARKERS[idx % len(SELECTION_MARKERS)]
+        meta["color"] = color
+        meta["marker"] = marker
+        mask = context_df[meta["name"]].fillna(False).astype(bool)
+        context_selection_sources.append(
+            ColumnDataSource(_cds_payload(context_df.loc[mask, tail_cols], tail_cols))
+        )
     trade_source = ColumnDataSource(dict(ts=[], price=[], size=[], marker_size=[], marker_color=[], side_label=[]))
 
     highlight_box = BoxAnnotation(fill_alpha=0.15, fill_color="#FFEB3B", line_color=None)
@@ -247,11 +259,12 @@ def build_tail_layout(config: TailAppConfig):
     volume_trade_box = BoxAnnotation(fill_color="#64B5F6", fill_alpha=0.15, line_color=None, level="underlay")
     trade_range = Range1d()
 
-    tail_enabled = config.value_column is not None
+    tail_enabled = len(selection_meta) > 0
+    columns_label = ", ".join(config.value_columns)
     context_title = (
-        f"36h overview ({config.value_column} tails highlighted in 2h view)"
+        f"36h overview ({columns_label} selections highlighted in 2h view)"
         if tail_enabled
-        else "36h overview (tail highlighting off)"
+        else "36h overview (highlighting off)"
     )
     detail_range = Range1d()
 
@@ -275,31 +288,28 @@ def build_tail_layout(config: TailAppConfig):
         source=context_source,
     )
     context_plot.add_layout(highlight_box)
-    context_plot.segment(
-        x0="ts_center",
-        y0="low",
-        x1="ts_center",
-        y1="high",
-        source=context_tail_source,
-        line_color="#E91E63",
-        line_dash="dashed",
-        line_width=2,
-    )
-    context_plot.scatter(
-        x="ts_center",
-        y="tail_marker",
-        size=10,
-        color="#E91E63",
-        alpha=0.9,
-        source=context_tail_source,
-    )
+    for meta, source in zip(selection_meta, context_selection_sources):
+        context_plot.segment(
+            x0="ts_center",
+            y0="low",
+            x1="ts_center",
+            y1="high",
+            source=source,
+            line_color=meta["color"],
+            line_dash="dashed",
+            line_width=2,
+        )
+        context_plot.scatter(
+            x="ts_center",
+            y="tail_marker",
+            size=10,
+            marker=meta["marker"],
+            color=meta["color"],
+            alpha=0.9,
+            source=source,
+        )
 
-    detail_title = (
-        f"Minibar Candles with {config.value_column} tails "
-        f"(left {config.left_tail_p:.0%}, right {config.right_tail_p:.0%})"
-        if tail_enabled
-        else "Minibar Candles (tail highlighting off)"
-    )
+    detail_title = f"Minibar Candles with {columns_label} selections highlighted" if tail_enabled else "Minibar Candles (highlighting off)"
     detail_plot = figure(
         x_axis_type="datetime",
         width=1400,
@@ -311,7 +321,7 @@ def build_tail_layout(config: TailAppConfig):
         y_range=DataRange1d(range_padding=0.05),
     )
     detail_plot.add_layout(trade_box)
-    width_ms = 60 * 1000 * 0.8
+    width_ms = BAR_WIDTH_MS
     detail_plot.segment("ts_center", "high", "ts_center", "low", color="gray", source=detail_source)
     detail_plot.vbar(
         x="ts_center",
@@ -331,17 +341,21 @@ def build_tail_layout(config: TailAppConfig):
             line_width=2,
             legend_label=f"EMA({config.ema_window})",
         )
-    detail_plot.scatter(
-        x="ts_center",
-        y="close",
-        size="tail_size",
-        marker="circle",
-        color="#FFD700",
-        fill_alpha="tail_alpha",
-        line_alpha="tail_alpha",
-        line_color="black",
-        source=detail_source,
-    )
+    if tail_enabled:
+        for idx, meta in enumerate(selection_meta):
+                color = meta["color"]
+                marker = meta["marker"]
+                detail_plot.scatter(
+                    x="ts_center",
+                    y="close",
+                size=meta["size_field"],
+                marker=marker,
+                color=color,
+                fill_alpha=meta["alpha_field"],
+                line_alpha=meta["alpha_field"],
+                line_color="black",
+                source=detail_source,
+            )
     hover_anchor = detail_plot.circle(
         x="ts_center",
         y="mid_price",
@@ -359,7 +373,8 @@ def build_tail_layout(config: TailAppConfig):
         ("Close", "@close{0.2f}"),
     ]
     if tail_enabled:
-        detail_tooltips.append((config.value_column, f"@{config.value_column}{{0.8f}}"))
+        for column_name in config.value_columns:
+            detail_tooltips.append((column_name, f"@{column_name}"))
     detail_plot.add_tools(
         HoverTool(
             tooltips=detail_tooltips,
@@ -435,13 +450,10 @@ def build_tail_layout(config: TailAppConfig):
     )
 
     if tail_enabled:
-        info_text = (
-            f"<b>{config.value_column}</b> | left tail p = {config.left_tail_p:.2%}"
-            f" (samples: {int(lower_mask.sum())}) | right tail p = {config.right_tail_p:.2%}"
-            f" (samples: {int(upper_mask.sum())})"
-        )
+        counts = " | ".join(f"{meta['name']}: {meta['count']}" for meta in selection_meta)
+        info_text = f"<b>Selections highlighted</b> — {counts}"
     else:
-        info_text = "Tail highlighting disabled (no value column provided)."
+        info_text = "Highlighting disabled (no value columns provided)."
     info_div = Div(text=info_text, width=950)
 
     state = {
@@ -477,8 +489,10 @@ def build_tail_layout(config: TailAppConfig):
         ctx_end = min(total, ctx_start + ctx)
         context_slice = base.iloc[ctx_start:ctx_end]
         context_source.data = context_slice.to_dict("list")
-        context_tail = context_slice.loc[context_slice["is_tail"], tail_cols]
-        context_tail_source.data = _cds_payload(context_tail, tail_cols)
+        for meta, source in zip(selection_meta, context_selection_sources):
+            mask = context_slice[meta["name"]].fillna(False).astype(bool)
+            selection_slice = context_slice.loc[mask, tail_cols]
+            source.data = _cds_payload(selection_slice, tail_cols)
         state["start_idx"] = start
         center_idx = min(total - 1, start + win // 2)
         if recenter_trade:
@@ -545,7 +559,7 @@ def build_tail_layout(config: TailAppConfig):
         except Exception:
             return
         ts_array = base["ts"].to_numpy()
-        idx = int(np.searchsorted(ts_array, target))
+        idx = int(np.searchsorted(ts_numeric, int(target.value)))
         idx = max(0, min(idx, len(base) - 1))
         _update_detail(idx - state["window_size"] // 2)
 
@@ -564,8 +578,7 @@ def build_tail_layout(config: TailAppConfig):
         ts = _event_ts(event.x)
         if ts is None:
             return
-        ts_array = base["ts"].to_numpy()
-        idx = int(np.searchsorted(ts_array, ts))
+        idx = int(np.searchsorted(ts_numeric, int(ts.value)))
         idx = max(0, min(idx, len(base) - 1))
         _update_detail(idx - state["window_size"] // 2)
 
@@ -573,10 +586,15 @@ def build_tail_layout(config: TailAppConfig):
         ts = _event_ts(event.x)
         if ts is None:
             return
-        ts_array = base["ts"].to_numpy()
-        idx = int(np.searchsorted(ts_array, ts))
-        idx = max(0, min(idx, len(base) - 1))
-        _ensure_visible(idx)
+        click_ns = int(ts.value)
+        idx = int(np.searchsorted(ts_center_numeric, click_ns))
+        if idx >= len(ts_center_numeric):
+            idx = len(ts_center_numeric) - 1
+        elif idx > 0:
+            prev_diff = abs(click_ns - ts_center_numeric[idx - 1])
+            curr_diff = abs(ts_center_numeric[idx] - click_ns)
+            if prev_diff <= curr_diff:
+                idx -= 1
         _update_trade(idx)
 
     prev_hour_button = Button(label="Prev 1h", width=90)
@@ -632,22 +650,26 @@ def _parse_args() -> TailAppConfig:
     parser = argparse.ArgumentParser(description="Interactive minibar tail viewer")
     parser.add_argument("--minibar", required=True, help="Path to parquet/csv with minibar data")
     parser.add_argument("--agg-trades", required=True, dest="agg_trades", help="Path to aggTrades parquet")
-    parser.add_argument("--value-column", help="Column to evaluate for tail events")
+    parser.add_argument(
+        "--value-column",
+        action="append",
+        dest="value_columns",
+        default=[],
+        help="Boolean column used to highlight selections (repeatable)",
+    )
+    parser.add_argument("--value-column-2", help="Optional secondary boolean column to highlight (deprecated)")
     parser.add_argument("--ema-window", type=int, default=None)
-    parser.add_argument("--left-tail", type=float, default=0.05)
-    parser.add_argument("--right-tail", type=float, default=0.05)
     parser.add_argument("--window-bars", type=int, default=120)
     parser.add_argument("--step-bars", type=int, default=60)
     parser.add_argument("--context-bars", type=int, default=36 * 60)
     parser.add_argument("--day-bars", type=int, default=24 * 60)
     args, _ = parser.parse_known_args()
+    value_columns = list(dict.fromkeys([*(args.value_columns or []), *( [args.value_column_2] if args.value_column_2 else [] )]))
     return TailAppConfig(
         minibar_path=Path(args.minibar).expanduser(),
         agg_trades_path=Path(args.agg_trades).expanduser(),
-        value_column=args.value_column,
+        value_columns=tuple(value_columns),
         ema_window=args.ema_window,
-        left_tail_p=args.left_tail,
-        right_tail_p=args.right_tail,
         window_bars=args.window_bars,
         step_bars=args.step_bars,
         context_bars=args.context_bars,
