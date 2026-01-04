@@ -8,7 +8,7 @@ bokeh serve --show klines_tail_app.py --args \
     --agg-trades DATA/organized/BTCUSDT/aggTrades.parquet \
     --value-column first_bool_colname \
     --value-column second_bool_colname \
-    --anchor-column anchor_column_names
+    --anchor-column anchor_column_name
 
 e.g
 bokeh serve --show klines_tail_app.py --args \
@@ -16,7 +16,7 @@ bokeh serve --show klines_tail_app.py --args \
     --agg-trades DATA/organized/BTCUSDT/aggTrades.parquet \
     --value-column polynomial2_coeff_bool \
     --value-column polynomial2_coeff_bool2 \
-    -anchor-column ema20
+    --anchor-column ema20
 
     
 '''
@@ -214,7 +214,6 @@ def _format_trade_source(trades: pd.DataFrame) -> Dict[str, List]:
         empty_cols = ["ts", "price", "size", "marker_size", "marker_color", "side_label"]
         return {col: [] for col in empty_cols}
     trades = trades.copy()
-    trades["ts_ms"] = trades["ts"].astype("int64") // 10**6
     magnitude = trades["size"].astype(float).abs()
     scale_ref = np.nanpercentile(magnitude, 95)
     if not np.isfinite(scale_ref) or scale_ref <= 0:
@@ -369,11 +368,11 @@ def build_tail_layout(config: TailAppConfig):
         )
     if tail_enabled:
         for idx, meta in enumerate(selection_meta):
-                color = meta["color"]
-                marker = meta["marker"]
-                detail_plot.scatter(
-                    x="ts_center",
-                    y="close",
+            color = meta["color"]
+            marker = meta["marker"]
+            detail_plot.scatter(
+                x="ts_center",
+                y="close",
                 size=meta["size_field"],
                 marker=marker,
                 color=color,
