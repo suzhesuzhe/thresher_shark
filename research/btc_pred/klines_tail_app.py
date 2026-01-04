@@ -1,12 +1,24 @@
 
 
 '''
+
+  
 bokeh serve --show klines_tail_app.py --args \
     --minibar DATA/organized/BTCUSDT/klines_1m_with_events.csv \
     --agg-trades DATA/organized/BTCUSDT/aggTrades.parquet \
     --value-column first_bool_colname \
     --value-column second_bool_colname \
-    --ema-window 20
+    --anchor-column anchor_column_names
+
+e.g
+bokeh serve --show klines_tail_app.py --args \
+    --minibar DATA/klines_1m_with_events.csv \
+    --agg-trades DATA/organized/BTCUSDT/aggTrades.parquet \
+    --value-column polynomial2_coeff_bool \
+    --value-column polynomial2_coeff_bool2 \
+    -anchor-column ema20
+
+    
 '''
 
 from __future__ import annotations
@@ -45,7 +57,7 @@ def prepare_minibar_dataset(
     minibar: pd.DataFrame,
     *,
     value_columns: list[str],
-    ema_window: int | None,
+    anchor_column: str | None,
     require_volume: bool = True,
 ) -> tuple[pd.DataFrame, list[dict[str, object]], list[int]]:
     required_cols = {"open", "high", "low", "close"}
@@ -58,8 +70,8 @@ def prepare_minibar_dataset(
     for col in value_columns:
         if col not in minibar.columns:
             raise ValueError(f"{col} column not found.")
-    if ema_window is not None and ema_window <= 0:
-        raise ValueError("ema_window must be positive when provided.")
+    if anchor_column is not None and anchor_column not in minibar.columns:
+        raise ValueError(f"{anchor_column} column not found.")
 
     drop_columns = required_cols if require_volume else {"open", "high", "low", "close"}
     base = minibar.sort_index().dropna(subset=list(drop_columns)).copy()
@@ -93,10 +105,16 @@ def prepare_minibar_dataset(
             }
         )
 
-    if ema_window is not None:
-        base["ema"] = base["close"].ewm(span=ema_window, adjust=False).mean()
+    if anchor_column:
+        anchor_series = base[anchor_column]
+        if not np.issubdtype(anchor_series.dtype, np.number):
+            anchor_series = anchor_series.astype(str).str.replace(",", "", regex=False)
+        anchor_series = pd.to_numeric(anchor_series, errors="coerce")
+        if anchor_series.isna().all():
+            raise ValueError(f"Anchor column '{anchor_column}' has no numeric values to plot.")
+        base["anchor"] = anchor_series
     else:
-        base["ema"] = np.nan
+        base["anchor"] = np.nan
     base["bar_top"] = base[["open", "close"]].max(axis=1)
     base["bar_bottom"] = base[["open", "close"]].min(axis=1)
     base["bar_color"] = np.where(base["close"] >= base["open"], "#4CAF50", "#F44336")
@@ -111,7 +129,7 @@ class TailAppConfig:
     minibar_path: Path
     agg_trades_path: Path
     value_columns: tuple[str, ...]
-    ema_window: Optional[int]
+    anchor_column: Optional[str]
     window_bars: int
     step_bars: int
     context_bars: int
@@ -221,7 +239,7 @@ def build_tail_layout(config: TailAppConfig):
     base, selection_meta, sample_positions = prepare_minibar_dataset(
         minibar,
         value_columns=list(config.value_columns),
-        ema_window=config.ema_window,
+        anchor_column=config.anchor_column,
         require_volume=False,
     )
     ts_numeric = base["ts"].astype("int64").to_numpy()
@@ -332,14 +350,14 @@ def build_tail_layout(config: TailAppConfig):
         line_color="bar_color",
         source=detail_source,
     )
-    if config.ema_window is not None:
+    if config.anchor_column is not None:
         detail_plot.line(
             x="ts",
-            y="ema",
+            y="anchor",
             source=detail_source,
             color="#2196F3",
             line_width=2,
-            legend_label=f"EMA({config.ema_window})",
+            legend_label=f"{config.anchor_column}",
         )
     if tail_enabled:
         for idx, meta in enumerate(selection_meta):
@@ -449,11 +467,12 @@ def build_tail_layout(config: TailAppConfig):
         )
     )
 
+    ema_suffix = "" if config.anchor_column else " Anchor line disabled (no --anchor-column)."
     if tail_enabled:
         counts = " | ".join(f"{meta['name']}: {meta['count']}" for meta in selection_meta)
-        info_text = f"<b>Selections highlighted</b> — {counts}"
+        info_text = f"<b>Selections highlighted</b> — {counts}.{ema_suffix}"
     else:
-        info_text = "Highlighting disabled (no value columns provided)."
+        info_text = f"Highlighting disabled (no value columns provided).{ema_suffix}"
     info_div = Div(text=info_text, width=950)
 
     state = {
@@ -658,7 +677,11 @@ def _parse_args() -> TailAppConfig:
         help="Boolean column used to highlight selections (repeatable)",
     )
     parser.add_argument("--value-column-2", help="Optional secondary boolean column to highlight (deprecated)")
-    parser.add_argument("--ema-window", type=int, default=None)
+    parser.add_argument(
+        "--anchor-column",
+        default=None,
+        help="Column name to plot as anchor line (omit to disable)",
+    )
     parser.add_argument("--window-bars", type=int, default=120)
     parser.add_argument("--step-bars", type=int, default=60)
     parser.add_argument("--context-bars", type=int, default=36 * 60)
@@ -669,7 +692,7 @@ def _parse_args() -> TailAppConfig:
         minibar_path=Path(args.minibar).expanduser(),
         agg_trades_path=Path(args.agg_trades).expanduser(),
         value_columns=tuple(value_columns),
-        ema_window=args.ema_window,
+        anchor_column=args.anchor_column,
         window_bars=args.window_bars,
         step_bars=args.step_bars,
         context_bars=args.context_bars,
