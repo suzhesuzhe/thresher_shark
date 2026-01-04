@@ -127,7 +127,7 @@ def prepare_minibar_dataset(
 @dataclass
 class TailAppConfig:
     minibar_path: Path
-    agg_trades_path: Path
+    agg_trades_path: Optional[Path]
     value_columns: tuple[str, ...]
     anchor_column: Optional[str]
     window_bars: int
@@ -235,7 +235,7 @@ def _event_ts(value: float) -> Optional[pd.Timestamp]:
 
 def build_tail_layout(config: TailAppConfig):
     minibar = _load_minibar_frame(config.minibar_path)
-    loader = AggTradeLoader(config.agg_trades_path)
+    loader = AggTradeLoader(config.agg_trades_path) if config.agg_trades_path else None
     base, selection_meta, sample_positions = prepare_minibar_dataset(
         minibar,
         value_columns=list(config.value_columns),
@@ -255,7 +255,7 @@ def build_tail_layout(config: TailAppConfig):
     trade_half = trade_window / 2
 
     detail_source = ColumnDataSource(base.iloc[start_idx : start_idx + window_size])
-    volume_source = ColumnDataSource(dict(ts=[], ts_center=[], sell_volume=[], buy_volume=[]))
+    volume_source = ColumnDataSource(dict(ts=[], ts_center=[], sell_volume=[], buy_volume=[], total_volume=[]))
     context_start = max(0, min(start_idx - (context_window - window_size) // 2, total_len - context_window))
     context_df = base.iloc[context_start : context_start + context_window]
     context_source = ColumnDataSource(context_df)
@@ -273,9 +273,16 @@ def build_tail_layout(config: TailAppConfig):
     trade_source = ColumnDataSource(dict(ts=[], price=[], size=[], marker_size=[], marker_color=[], side_label=[]))
 
     highlight_box = BoxAnnotation(fill_alpha=0.15, fill_color="#FFEB3B", line_color=None)
-    trade_box = BoxAnnotation(fill_color="#64B5F6", fill_alpha=0.15, line_color=None, level="underlay")
-    volume_trade_box = BoxAnnotation(fill_color="#64B5F6", fill_alpha=0.15, line_color=None, level="underlay")
-    trade_range = Range1d()
+    trade_box = None
+    volume_trade_box = None
+    trade_range = None
+    has_trades = loader is not None
+    if not has_trades and "volume" not in base.columns:
+        raise ValueError("Minibar data must include a 'volume' column when --agg-trades is omitted.")
+    if has_trades:
+        trade_box = BoxAnnotation(fill_color="#64B5F6", fill_alpha=0.15, line_color=None, level="underlay")
+        volume_trade_box = BoxAnnotation(fill_color="#64B5F6", fill_alpha=0.15, line_color=None, level="underlay")
+        trade_range = Range1d()
 
     tail_enabled = len(selection_meta) > 0
     columns_label = ", ".join(config.value_columns)
@@ -338,7 +345,8 @@ def build_tail_layout(config: TailAppConfig):
         x_range=detail_range,
         y_range=DataRange1d(range_padding=0.05),
     )
-    detail_plot.add_layout(trade_box)
+    if trade_box is not None:
+        detail_plot.add_layout(trade_box)
     width_ms = BAR_WIDTH_MS
     detail_plot.segment("ts_center", "high", "ts_center", "low", color="gray", source=detail_source)
     detail_plot.vbar(
@@ -412,60 +420,82 @@ def build_tail_layout(config: TailAppConfig):
         title="Stacked volume",
         y_range=DataRange1d(),
     )
-    volume_plot.vbar_stack(
-        ["sell_volume", "buy_volume"],
-        x="ts_center",
-        width=width_ms,
-        color=["#D32F2F", "#2E7D32"],
-        source=volume_source,
-        legend_label=["Sell volume", "Buy volume"],
-    )
-    volume_plot.add_layout(volume_trade_box)
-    volume_plot.legend.location = "top_left"
-    volume_plot.legend.click_policy = "hide"
-    volume_plot.add_tools(
-        HoverTool(
-            tooltips=[
-                ("Time", "@ts{%F %T}"),
-                ("Sell volume", "@sell_volume{0.00 a}"),
-                ("Buy volume", "@buy_volume{0.00 a}"),
-            ],
-            formatters={"@ts": "datetime"},
-            mode="vline",
+    if has_trades:
+        volume_plot.vbar_stack(
+            ["sell_volume", "buy_volume"],
+            x="ts_center",
+            width=width_ms,
+            color=["#D32F2F", "#2E7D32"],
+            source=volume_source,
+            legend_label=["Sell volume", "Buy volume"],
         )
-    )
+        if volume_trade_box is not None:
+            volume_plot.add_layout(volume_trade_box)
+        volume_plot.legend.location = "top_left"
+        volume_plot.legend.click_policy = "hide"
+        volume_plot.add_tools(
+            HoverTool(
+                tooltips=[
+                    ("Time", "@ts{%F %T}"),
+                    ("Sell volume", "@sell_volume{0.00 a}"),
+                    ("Buy volume", "@buy_volume{0.00 a}"),
+                ],
+                formatters={"@ts": "datetime"},
+                mode="vline",
+            )
+        )
+    else:
+        volume_plot.vbar(
+            x="ts_center",
+            width=width_ms,
+            top="total_volume",
+            color="#90A4AE",
+            source=volume_source,
+        )
+        volume_plot.add_tools(
+            HoverTool(
+                tooltips=[
+                    ("Time", "@ts{%F %T}"),
+                    ("Volume", "@total_volume{0.00 a}"),
+                ],
+                formatters={"@ts": "datetime"},
+                mode="vline",
+            )
+        )
 
-    trade_plot = figure(
-        x_axis_type="datetime",
-        x_range=trade_range,
-        width=1400,
-        height=260,
-        tools="reset,save",
-        active_drag=None,
-        title="AggTrades (±5 minutes)",
-        y_range=DataRange1d(),
-    )
-    trade_plot.scatter(
-        x="ts",
-        y="price",
-        size="marker_size",
-        fill_color="marker_color",
-        line_color=None,
-        fill_alpha=0.25,
-        source=trade_source,
-    )
-    trade_plot.add_tools(
-        HoverTool(
-            tooltips=[
-                ("Time", "@ts{%F %T.%3N}"),
-                ("Price", "@price{0.2f}"),
-                ("Size", "@size{0.4f}"),
-                ("Aggressor", "@side_label"),
-            ],
-            formatters={"@ts": "datetime"},
-            mode="mouse",
+    trade_plot = None
+    if has_trades:
+        trade_plot = figure(
+            x_axis_type="datetime",
+            x_range=trade_range,
+            width=1400,
+            height=260,
+            tools="reset,save",
+            active_drag=None,
+            title="AggTrades (±5 minutes)",
+            y_range=DataRange1d(),
         )
-    )
+        trade_plot.scatter(
+            x="ts",
+            y="price",
+            size="marker_size",
+            fill_color="marker_color",
+            line_color=None,
+            fill_alpha=0.25,
+            source=trade_source,
+        )
+        trade_plot.add_tools(
+            HoverTool(
+                tooltips=[
+                    ("Time", "@ts{%F %T.%3N}"),
+                    ("Price", "@price{0.2f}"),
+                    ("Size", "@size{0.4f}"),
+                    ("Aggressor", "@side_label"),
+                ],
+                formatters={"@ts": "datetime"},
+                mode="mouse",
+            )
+        )
 
     ema_suffix = "" if config.anchor_column else " Anchor line disabled (no --anchor-column)."
     if tail_enabled:
@@ -491,14 +521,23 @@ def build_tail_layout(config: TailAppConfig):
         end = min(total, start + win)
         window = base.iloc[start:end]
         detail_source.data = window.to_dict("list")
-        volume_frame = loader.minute_volume(window["ts"].iloc[0], window["ts"].iloc[-1])
-        aligned_volume = volume_frame.set_index("ts")
-        ts_index = window["ts"].dt.floor("min")
-        aligned_volume = aligned_volume.reindex(ts_index, fill_value=0.0)
-        aligned_volume = aligned_volume.reset_index(drop=True)
-        aligned_volume["ts"] = window["ts"].values
-        aligned_volume["ts_center"] = window["ts_center"].values
-        volume_source.data = _cds_payload(aligned_volume, ["ts", "ts_center", "sell_volume", "buy_volume"])
+        if loader is not None:
+            volume_frame = loader.minute_volume(window["ts"].iloc[0], window["ts"].iloc[-1])
+            aligned_volume = volume_frame.set_index("ts")
+            ts_index = window["ts"].dt.floor("min")
+            aligned_volume = aligned_volume.reindex(ts_index, fill_value=0.0)
+            aligned_volume = aligned_volume.reset_index(drop=True)
+            aligned_volume["ts"] = window["ts"].values
+            aligned_volume["ts_center"] = window["ts_center"].values
+            aligned_volume["total_volume"] = aligned_volume["sell_volume"] + aligned_volume["buy_volume"]
+            volume_source.data = _cds_payload(
+                aligned_volume,
+                ["ts", "ts_center", "sell_volume", "buy_volume", "total_volume"],
+            )
+        else:
+            volume_frame = window[["ts", "ts_center", "volume"]].copy()
+            volume_frame["total_volume"] = pd.to_numeric(volume_frame["volume"], errors="coerce").fillna(0.0)
+            volume_source.data = _cds_payload(volume_frame, ["ts", "ts_center", "total_volume"])
         highlight_box.left = window["ts"].iloc[0]
         highlight_box.right = window["ts_right"].iloc[-1]
         detail_range.start = window["ts"].iloc[0]
@@ -514,10 +553,12 @@ def build_tail_layout(config: TailAppConfig):
             source.data = _cds_payload(selection_slice, tail_cols)
         state["start_idx"] = start
         center_idx = min(total - 1, start + win // 2)
-        if recenter_trade:
+        if recenter_trade and loader is not None:
             _update_trade(center_idx)
 
     def _update_trade(target_idx: int) -> None:
+        if loader is None or trade_range is None or trade_box is None or volume_trade_box is None:
+            return
         total = len(base)
         idx = max(0, min(target_idx, total - 1))
         center_ts = base["ts_center"].iloc[idx]
@@ -583,11 +624,15 @@ def build_tail_layout(config: TailAppConfig):
         _update_detail(idx - state["window_size"] // 2)
 
     def _shift_trade(delta: int) -> None:
+        if loader is None:
+            return
         new_idx = state["trade_idx"] + delta
         _ensure_visible(new_idx)
         _update_trade(new_idx)
 
     def _handle_selection(attr: str, old: List[int], new: List[int]) -> None:
+        if loader is None:
+            return
         if not new:
             return
         absolute_idx = state["start_idx"] + new[-1]
@@ -602,6 +647,8 @@ def build_tail_layout(config: TailAppConfig):
         _update_detail(idx - state["window_size"] // 2)
 
     def _handle_detail_tap(event) -> None:
+        if loader is None:
+            return
         ts = _event_ts(event.x)
         if ts is None:
             return
@@ -649,9 +696,9 @@ def build_tail_layout(config: TailAppConfig):
     day_controls = row(prev_day_button, next_day_button, sizing_mode="scale_width")
     jump_controls = row(jump_input, jump_button, sizing_mode="scale_width")
     hour_controls = row(prev_hour_button, next_hour_button, prev_sample_button, next_sample_button, sizing_mode="scale_width")
-    trade_controls = row(prev_trade_button, next_trade_button, sizing_mode="scale_width")
+    trade_controls = row(prev_trade_button, next_trade_button, sizing_mode="scale_width") if has_trades else None
 
-    layout = column(
+    layout_children = [
         info_div,
         day_controls,
         jump_controls,
@@ -659,16 +706,17 @@ def build_tail_layout(config: TailAppConfig):
         hour_controls,
         detail_plot,
         volume_plot,
-        trade_controls,
-        trade_plot,
-    )
+    ]
+    if trade_controls is not None and trade_plot is not None:
+        layout_children.extend([trade_controls, trade_plot])
+    layout = column(*layout_children)
     return layout
 
 
 def _parse_args() -> TailAppConfig:
     parser = argparse.ArgumentParser(description="Interactive minibar tail viewer")
     parser.add_argument("--minibar", required=True, help="Path to parquet/csv with minibar data")
-    parser.add_argument("--agg-trades", required=True, dest="agg_trades", help="Path to aggTrades parquet")
+    parser.add_argument("--agg-trades", dest="agg_trades", help="Path to aggTrades parquet")
     parser.add_argument(
         "--value-column",
         action="append",
@@ -690,7 +738,7 @@ def _parse_args() -> TailAppConfig:
     value_columns = list(dict.fromkeys([*(args.value_columns or []), *( [args.value_column_2] if args.value_column_2 else [] )]))
     return TailAppConfig(
         minibar_path=Path(args.minibar).expanduser(),
-        agg_trades_path=Path(args.agg_trades).expanduser(),
+        agg_trades_path=Path(args.agg_trades).expanduser() if args.agg_trades else None,
         value_columns=tuple(value_columns),
         anchor_column=args.anchor_column,
         window_bars=args.window_bars,
