@@ -48,9 +48,37 @@ MINUTE_DELTA = pd.Timedelta(minutes=1)
 MINUTE_HALF = MINUTE_DELTA / 2
 BAR_WIDTH = MINUTE_DELTA * 0.8
 BAR_WIDTH_MS = int(BAR_WIDTH.total_seconds() * 1000)
-SELECTION_MARKERS = ["circle", "triangle"]
-SELECTION_COLORS = ["#FFD700", "#26A69A"]
+SELECTION_MARKERS = [
+    "circle",
+    "triangle",
+    "square",
+    "diamond",
+    "inverted_triangle",
+    "cross",
+    "x",
+    "asterisk",
+]
+SELECTION_COLORS = [
+    "#FFD700",
+    "#26A69A",
+    "#EF5350",
+    "#5C6BC0",
+    "#FF7043",
+    "#8D6E63",
+    "#26C6DA",
+    "#7CB342",
+]
 INDICATOR_COLORS = ["#2196F3", "#8E24AA", "#00897B", "#F9A825"]
+
+
+def _marker_svg(marker: str, color: str) -> str:
+    if marker == "circle":
+        shape = f"<circle cx='6' cy='6' r='4.5' fill='{color}' />"
+    elif marker == "triangle":
+        shape = f"<polygon points='6,1.5 10.5,10.5 1.5,10.5' fill='{color}' />"
+    else:
+        shape = f"<rect x='2' y='2' width='8' height='8' fill='{color}' />"
+    return f"<svg width='12' height='12' style='vertical-align:middle'>{shape}</svg>"
 
 
 def prepare_minibar_dataset(
@@ -90,6 +118,7 @@ def prepare_minibar_dataset(
 
     selection_meta: list[dict[str, object]] = []
     combined_mask = pd.Series(False, index=base.index)
+    total_selections = max(1, len(value_columns))
     for idx, col in enumerate(value_columns):
         mask = base[col].fillna(False).astype(bool)
         size_field = f"selection_{idx}_size"
@@ -103,6 +132,8 @@ def prepare_minibar_dataset(
                 "size_field": size_field,
                 "alpha_field": alpha_field,
                 "count": int(mask.sum()),
+                "tail_marker_field": f"tail_marker_{idx}",
+                "close_marker_field": f"close_marker_{idx}",
             }
         )
 
@@ -124,6 +155,13 @@ def prepare_minibar_dataset(
     base["bar_color"] = np.where(base["close"] >= base["open"], "#4CAF50", "#F44336")
     base["is_tail"] = combined_mask.to_numpy()
     base["tail_marker"] = base["high"] + (base["high"] - base["low"]) * 0.05
+    bar_range = (base["high"] - base["low"]).replace(0, np.nan)
+    range_fallback = float(bar_range.median()) if bar_range.notna().any() else 0.0
+    bar_range = bar_range.fillna(range_fallback)
+    for idx in range(len(value_columns)):
+        offset = (idx - (total_selections - 1) / 2) * bar_range * 0.1
+        base[f"tail_marker_{idx}"] = base["tail_marker"] + offset
+        base[f"close_marker_{idx}"] = base["close"] + offset
     sample_positions = np.flatnonzero(base["is_tail"]).tolist()
     return base, selection_meta, indicator_meta, sample_positions
 
@@ -262,7 +300,7 @@ def build_tail_layout(config: TailAppConfig):
     context_start = max(0, min(start_idx - (context_window - window_size) // 2, total_len - context_window))
     context_df = base.iloc[context_start : context_start + context_window]
     context_source = ColumnDataSource(context_df)
-    tail_cols = ["ts_center", "low", "high", "tail_marker"]
+    tail_cols = ["ts_center", "low", "high"]
     context_selection_sources: list[ColumnDataSource] = []
     selection_renderers: list[list] = [[] for _ in selection_meta]
     indicator_renderers: list[list] = [[] for _ in indicator_meta]
@@ -272,8 +310,10 @@ def build_tail_layout(config: TailAppConfig):
         meta["color"] = color
         meta["marker"] = marker
         mask = context_df[meta["name"]].fillna(False).astype(bool)
+        marker_field = meta["tail_marker_field"]
+        cols = tail_cols + [marker_field]
         context_selection_sources.append(
-            ColumnDataSource(_cds_payload(context_df.loc[mask, tail_cols], tail_cols))
+            ColumnDataSource(_cds_payload(context_df.loc[mask, cols], cols))
         )
     trade_source = ColumnDataSource(dict(ts=[], price=[], size=[], marker_size=[], marker_color=[], side_label=[]))
 
@@ -304,7 +344,6 @@ def build_tail_layout(config: TailAppConfig):
         height=400,
         tools="reset,save,tap",
         active_drag=None,
-        title=context_title,
         y_range=DataRange1d(),
     )
     context_plot.segment("ts_center", "high", "ts_center", "low", color="gray", source=context_source)
@@ -341,7 +380,7 @@ def build_tail_layout(config: TailAppConfig):
         )
         scatter_renderer = context_plot.scatter(
             x="ts_center",
-            y="tail_marker",
+            y=meta["tail_marker_field"],
             size=10,
             marker=meta["marker"],
             color=meta["color"],
@@ -357,7 +396,6 @@ def build_tail_layout(config: TailAppConfig):
         height=400,
         tools="reset,save,tap",
         active_drag=None,
-        title=detail_title,
         x_range=detail_range,
         y_range=DataRange1d(range_padding=0.05),
     )
@@ -391,7 +429,7 @@ def build_tail_layout(config: TailAppConfig):
             marker = meta["marker"]
             detail_renderer = detail_plot.scatter(
                 x="ts_center",
-                y="close",
+                y=meta["close_marker_field"],
                 size=meta["size_field"],
                 marker=marker,
                 color=color,
@@ -522,9 +560,7 @@ def build_tail_layout(config: TailAppConfig):
             )
         )
 
-    indicator_suffix = (
-        "" if indicator_meta else " Indicators disabled (no --indicator)."
-    )
+    indicator_suffix = "" if indicator_meta else " Indicators disabled (no --indicator)."
     if tail_enabled:
         counts = " | ".join(f"{meta['name']}: {meta['count']}" for meta in selection_meta)
         info_text = f"<b>Selections highlighted</b> — {counts}.{indicator_suffix}"
@@ -533,13 +569,19 @@ def build_tail_layout(config: TailAppConfig):
         info_text = f"Highlighting disabled (no value columns provided).{indicator_suffix}"
         sampler_text = "Sampler markers disabled (no value columns provided)."
     info_div = Div(text=info_text, width=950)
-    sampler_div = Div(text=sampler_text, width=950)
 
     if tail_enabled:
         sampler_checkboxes = CheckboxGroup(
             labels=[meta["name"] for meta in selection_meta],
             active=list(range(len(selection_meta))),
         )
+        sampler_checkboxes.styles = {"line-height": "24px"}
+        sampler_icons = "<div style='display:grid;grid-auto-rows:24px;align-items:center;'>"
+        sampler_icons += "".join(
+            f"<div>{_marker_svg(meta['marker'], meta['color'])}</div>" for meta in selection_meta
+        )
+        sampler_icons += "</div>"
+        sampler_icon_div = Div(text=sampler_icons, width=30)
 
         def _toggle_samplers(attr: str, old: List[int], new: List[int]) -> None:
             active = set(sampler_checkboxes.active)
@@ -555,7 +597,11 @@ def build_tail_layout(config: TailAppConfig):
                 state["sample_positions"] = []
 
         sampler_checkboxes.on_change("active", _toggle_samplers)
-        sampler_tool_column = column(Div(text="<b>Samplers</b>"), sampler_checkboxes, width=220)
+        sampler_tool_column = column(
+            Div(text="<b>Samplers</b>"),
+            row(sampler_checkboxes, sampler_icon_div),
+            width=260,
+        )
     else:
         sampler_tool_column = column(Div(text="Samplers disabled."), width=220)
 
@@ -564,6 +610,21 @@ def build_tail_layout(config: TailAppConfig):
             labels=[meta["name"] for meta in indicator_meta],
             active=list(range(len(indicator_meta))),
         )
+        indicator_checkboxes.styles = {"line-height": "24px"}
+        indicator_icons = "<div style='display:grid;grid-auto-rows:24px;align-items:center;'>"
+        indicator_icons += "".join(
+            (
+                "<div>"
+                "<svg width='22' height='12' style='vertical-align:middle'>"
+                f"<line x1='1' y1='6' x2='21' y2='6' "
+                f"stroke='{INDICATOR_COLORS[idx % len(INDICATOR_COLORS)]}' stroke-width='2' />"
+                "</svg>"
+                "</div>"
+            )
+            for idx, _ in enumerate(indicator_meta)
+        )
+        indicator_icons += "</div>"
+        indicator_icon_div = Div(text=indicator_icons, width=30)
 
         def _toggle_indicators(attr: str, old: List[int], new: List[int]) -> None:
             active = set(indicator_checkboxes.active)
@@ -573,7 +634,11 @@ def build_tail_layout(config: TailAppConfig):
                     renderer.visible = visible
 
         indicator_checkboxes.on_change("active", _toggle_indicators)
-        indicator_tool_column = column(Div(text="<b>Indicators</b>"), indicator_checkboxes, width=220)
+        indicator_tool_column = column(
+            Div(text="<b>Indicators</b>"),
+            row(indicator_checkboxes, indicator_icon_div),
+            width=260,
+        )
     else:
         indicator_tool_column = column(Div(text="Indicators disabled."), width=220)
 
@@ -621,8 +686,9 @@ def build_tail_layout(config: TailAppConfig):
         context_source.data = context_slice.to_dict("list")
         for meta, source in zip(selection_meta, context_selection_sources):
             mask = context_slice[meta["name"]].fillna(False).astype(bool)
-            selection_slice = context_slice.loc[mask, tail_cols]
-            source.data = _cds_payload(selection_slice, tail_cols)
+            cols = tail_cols + [meta["tail_marker_field"]]
+            selection_slice = context_slice.loc[mask, cols]
+            source.data = _cds_payload(selection_slice, cols)
         state["start_idx"] = start
         center_idx = min(total - 1, start + win // 2)
         if recenter_trade and loader is not None:
@@ -776,7 +842,6 @@ def build_tail_layout(config: TailAppConfig):
         jump_controls,
         context_plot,
         hour_controls,
-        sampler_div,
         detail_plot,
         volume_plot,
     ]
