@@ -6,17 +6,15 @@
 bokeh serve --show klines_tail_app.py --args \
     --minibar DATA/organized/BTCUSDT/klines_1m_with_events.csv \
     --agg-trades DATA/organized/BTCUSDT/aggTrades.parquet \
-    --value-column first_bool_colname \
-    --value-column second_bool_colname \
-    --anchor-column anchor_column_name
+    --value-column first_bool_colname,second_bool_colname \
+    --indicator indicator_column_name
 
 e.g
 bokeh serve --show klines_tail_app.py --args \
     --minibar DATA/klines_1m_with_events.csv \
     --agg-trades DATA/organized/BTCUSDT/aggTrades.parquet \
-    --value-column polynomial2_coeff_bool \
-    --value-column polynomial2_coeff_bool2 \
-    --anchor-column ema20
+    --value-column polynomial2_coeff_bool,polynomial2_coeff_bool2 \
+    --indicator ema20,ema50
 
     
 '''
@@ -36,6 +34,7 @@ from bokeh.layouts import column, row
 from bokeh.models import (
     BoxAnnotation,
     Button,
+    CheckboxGroup,
     ColumnDataSource,
     DataRange1d,
     Div,
@@ -51,15 +50,16 @@ BAR_WIDTH = MINUTE_DELTA * 0.8
 BAR_WIDTH_MS = int(BAR_WIDTH.total_seconds() * 1000)
 SELECTION_MARKERS = ["circle", "triangle"]
 SELECTION_COLORS = ["#FFD700", "#26A69A"]
+INDICATOR_COLORS = ["#2196F3", "#8E24AA", "#00897B", "#F9A825"]
 
 
 def prepare_minibar_dataset(
     minibar: pd.DataFrame,
     *,
     value_columns: list[str],
-    anchor_column: str | None,
+    indicator_columns: list[str],
     require_volume: bool = True,
-) -> tuple[pd.DataFrame, list[dict[str, object]], list[int]]:
+) -> tuple[pd.DataFrame, list[dict[str, object]], list[dict[str, object]], list[int]]:
     required_cols = {"open", "high", "low", "close"}
     volume_cols = {"buy_volume", "sell_volume"}
     if require_volume:
@@ -70,8 +70,9 @@ def prepare_minibar_dataset(
     for col in value_columns:
         if col not in minibar.columns:
             raise ValueError(f"{col} column not found.")
-    if anchor_column is not None and anchor_column not in minibar.columns:
-        raise ValueError(f"{anchor_column} column not found.")
+    for col in indicator_columns:
+        if col not in minibar.columns:
+            raise ValueError(f"{col} column not found.")
 
     drop_columns = required_cols if require_volume else {"open", "high", "low", "close"}
     base = minibar.sort_index().dropna(subset=list(drop_columns)).copy()
@@ -105,23 +106,26 @@ def prepare_minibar_dataset(
             }
         )
 
-    if anchor_column:
-        anchor_series = base[anchor_column]
-        if not np.issubdtype(anchor_series.dtype, np.number):
-            anchor_series = anchor_series.astype(str).str.replace(",", "", regex=False)
-        anchor_series = pd.to_numeric(anchor_series, errors="coerce")
-        if anchor_series.isna().all():
-            raise ValueError(f"Anchor column '{anchor_column}' has no numeric values to plot.")
-        base["anchor"] = anchor_series
-    else:
-        base["anchor"] = np.nan
+    indicator_meta: list[dict[str, object]] = []
+    for idx, col in enumerate(indicator_columns):
+        indicator_series = base[col]
+        if not np.issubdtype(indicator_series.dtype, np.number):
+            indicator_series = indicator_series.astype(str).str.replace(",", "", regex=False)
+        indicator_series = pd.to_numeric(indicator_series, errors="coerce")
+        if indicator_series.isna().all():
+            raise ValueError(f"Indicator column '{col}' has no numeric values to plot.")
+        field = f"indicator_{idx}"
+        base[field] = indicator_series
+        indicator_meta.append({"name": col, "field": field})
+    if not indicator_meta:
+        base["indicator_0"] = np.nan
     base["bar_top"] = base[["open", "close"]].max(axis=1)
     base["bar_bottom"] = base[["open", "close"]].min(axis=1)
     base["bar_color"] = np.where(base["close"] >= base["open"], "#4CAF50", "#F44336")
     base["is_tail"] = combined_mask.to_numpy()
     base["tail_marker"] = base["high"] + (base["high"] - base["low"]) * 0.05
     sample_positions = np.flatnonzero(base["is_tail"]).tolist()
-    return base, selection_meta, sample_positions
+    return base, selection_meta, indicator_meta, sample_positions
 
 
 @dataclass
@@ -129,7 +133,7 @@ class TailAppConfig:
     minibar_path: Path
     agg_trades_path: Optional[Path]
     value_columns: tuple[str, ...]
-    anchor_column: Optional[str]
+    indicator_columns: tuple[str, ...]
     window_bars: int
     step_bars: int
     context_bars: int
@@ -235,10 +239,10 @@ def _event_ts(value: float) -> Optional[pd.Timestamp]:
 def build_tail_layout(config: TailAppConfig):
     minibar = _load_minibar_frame(config.minibar_path)
     loader = AggTradeLoader(config.agg_trades_path) if config.agg_trades_path else None
-    base, selection_meta, sample_positions = prepare_minibar_dataset(
+    base, selection_meta, indicator_meta, sample_positions = prepare_minibar_dataset(
         minibar,
         value_columns=list(config.value_columns),
-        anchor_column=config.anchor_column,
+        indicator_columns=list(config.indicator_columns),
         require_volume=False,
     )
     ts_numeric = base["ts"].astype("int64").to_numpy()
@@ -260,6 +264,8 @@ def build_tail_layout(config: TailAppConfig):
     context_source = ColumnDataSource(context_df)
     tail_cols = ["ts_center", "low", "high", "tail_marker"]
     context_selection_sources: list[ColumnDataSource] = []
+    selection_renderers: list[list] = [[] for _ in selection_meta]
+    indicator_renderers: list[list] = [[] for _ in indicator_meta]
     for idx, meta in enumerate(selection_meta):
         color = SELECTION_COLORS[idx % len(SELECTION_COLORS)]
         marker = SELECTION_MARKERS[idx % len(SELECTION_MARKERS)]
@@ -295,7 +301,7 @@ def build_tail_layout(config: TailAppConfig):
     context_plot = figure(
         x_axis_type="datetime",
         width=1400,
-        height=200,
+        height=400,
         tools="reset,save,tap",
         active_drag=None,
         title=context_title,
@@ -311,9 +317,19 @@ def build_tail_layout(config: TailAppConfig):
         line_color="bar_color",
         source=context_source,
     )
+    for idx, meta in enumerate(indicator_meta):
+        color = INDICATOR_COLORS[idx % len(INDICATOR_COLORS)]
+        renderer = context_plot.line(
+            x="ts",
+            y=meta["field"],
+            source=context_source,
+            color=color,
+            line_width=2,
+        )
+        indicator_renderers[idx].append(renderer)
     context_plot.add_layout(highlight_box)
-    for meta, source in zip(selection_meta, context_selection_sources):
-        context_plot.segment(
+    for idx, (meta, source) in enumerate(zip(selection_meta, context_selection_sources)):
+        segment_renderer = context_plot.segment(
             x0="ts_center",
             y0="low",
             x1="ts_center",
@@ -323,7 +339,7 @@ def build_tail_layout(config: TailAppConfig):
             line_dash="dashed",
             line_width=2,
         )
-        context_plot.scatter(
+        scatter_renderer = context_plot.scatter(
             x="ts_center",
             y="tail_marker",
             size=10,
@@ -332,6 +348,7 @@ def build_tail_layout(config: TailAppConfig):
             alpha=0.9,
             source=source,
         )
+        selection_renderers[idx].extend([segment_renderer, scatter_renderer])
 
     detail_title = f"Minibar Candles with {columns_label} selections highlighted" if tail_enabled else "Minibar Candles (highlighting off)"
     detail_plot = figure(
@@ -357,20 +374,22 @@ def build_tail_layout(config: TailAppConfig):
         line_color="bar_color",
         source=detail_source,
     )
-    if config.anchor_column is not None:
-        detail_plot.line(
+    for idx, meta in enumerate(indicator_meta):
+        color = INDICATOR_COLORS[idx % len(INDICATOR_COLORS)]
+        renderer = detail_plot.line(
             x="ts",
-            y="anchor",
+            y=meta["field"],
             source=detail_source,
-            color="#2196F3",
+            color=color,
             line_width=2,
-            legend_label=f"{config.anchor_column}",
         )
+        indicator_renderers[idx].append(renderer)
     if tail_enabled:
+        sampler_bits = []
         for idx, meta in enumerate(selection_meta):
             color = meta["color"]
             marker = meta["marker"]
-            detail_plot.scatter(
+            detail_renderer = detail_plot.scatter(
                 x="ts_center",
                 y="close",
                 size=meta["size_field"],
@@ -380,6 +399,13 @@ def build_tail_layout(config: TailAppConfig):
                 line_alpha=meta["alpha_field"],
                 line_color="black",
                 source=detail_source,
+            )
+            selection_renderers[idx].append(detail_renderer)
+            sampler_bits.append(
+                f"{meta['name']} "
+                f"<span style='display:inline-block;width:10px;height:10px;"
+                f"background:{color};border:1px solid #222;margin-right:6px;'></span>"
+                f"({marker})"
             )
     hover_anchor = detail_plot.circle(
         x="ts_center",
@@ -496,13 +522,60 @@ def build_tail_layout(config: TailAppConfig):
             )
         )
 
-    ema_suffix = "" if config.anchor_column else " Anchor line disabled (no --anchor-column)."
+    indicator_suffix = (
+        "" if indicator_meta else " Indicators disabled (no --indicator)."
+    )
     if tail_enabled:
         counts = " | ".join(f"{meta['name']}: {meta['count']}" for meta in selection_meta)
-        info_text = f"<b>Selections highlighted</b> — {counts}.{ema_suffix}"
+        info_text = f"<b>Selections highlighted</b> — {counts}.{indicator_suffix}"
+        sampler_text = " | ".join(sampler_bits) if sampler_bits else "No sampler markers."
     else:
-        info_text = f"Highlighting disabled (no value columns provided).{ema_suffix}"
+        info_text = f"Highlighting disabled (no value columns provided).{indicator_suffix}"
+        sampler_text = "Sampler markers disabled (no value columns provided)."
     info_div = Div(text=info_text, width=950)
+    sampler_div = Div(text=sampler_text, width=950)
+
+    if tail_enabled:
+        sampler_checkboxes = CheckboxGroup(
+            labels=[meta["name"] for meta in selection_meta],
+            active=list(range(len(selection_meta))),
+        )
+
+        def _toggle_samplers(attr: str, old: List[int], new: List[int]) -> None:
+            active = set(sampler_checkboxes.active)
+            for idx, renderers in enumerate(selection_renderers):
+                visible = idx in active
+                for renderer in renderers:
+                    renderer.visible = visible
+            if active:
+                active_cols = [selection_meta[idx]["name"] for idx in sorted(active)]
+                active_mask = base[active_cols].fillna(False).astype(bool).any(axis=1)
+                state["sample_positions"] = np.flatnonzero(active_mask.to_numpy()).tolist()
+            else:
+                state["sample_positions"] = []
+
+        sampler_checkboxes.on_change("active", _toggle_samplers)
+        sampler_tool_column = column(Div(text="<b>Samplers</b>"), sampler_checkboxes, width=220)
+    else:
+        sampler_tool_column = column(Div(text="Samplers disabled."), width=220)
+
+    if indicator_meta:
+        indicator_checkboxes = CheckboxGroup(
+            labels=[meta["name"] for meta in indicator_meta],
+            active=list(range(len(indicator_meta))),
+        )
+
+        def _toggle_indicators(attr: str, old: List[int], new: List[int]) -> None:
+            active = set(indicator_checkboxes.active)
+            for idx, renderers in enumerate(indicator_renderers):
+                visible = idx in active
+                for renderer in renderers:
+                    renderer.visible = visible
+
+        indicator_checkboxes.on_change("active", _toggle_indicators)
+        indicator_tool_column = column(Div(text="<b>Indicators</b>"), indicator_checkboxes, width=220)
+    else:
+        indicator_tool_column = column(Div(text="Indicators disabled."), width=220)
 
     state = {
         "start_idx": start_idx,
@@ -703,12 +776,15 @@ def build_tail_layout(config: TailAppConfig):
         jump_controls,
         context_plot,
         hour_controls,
+        sampler_div,
         detail_plot,
         volume_plot,
     ]
     if trade_controls is not None and trade_plot is not None:
         layout_children.extend([trade_controls, trade_plot])
-    layout = column(*layout_children)
+    main_column = column(*layout_children)
+    tool_column = column(indicator_tool_column, sampler_tool_column, width=220)
+    layout = row(tool_column, main_column)
     return layout
 
 
@@ -725,21 +801,42 @@ def _parse_args() -> TailAppConfig:
     )
     parser.add_argument("--value-column-2", help="Optional secondary boolean column to highlight (deprecated)")
     parser.add_argument(
+        "--indicator",
+        action="append",
+        dest="indicator_columns",
+        default=[],
+        help="Indicator column(s) to plot (repeatable, comma-separated).",
+    )
+    parser.add_argument(
         "--anchor-column",
+        dest="anchor_column",
         default=None,
-        help="Column name to plot as anchor line (omit to disable)",
+        help="Deprecated. Use --indicator instead.",
     )
     parser.add_argument("--window-bars", type=int, default=120)
     parser.add_argument("--step-bars", type=int, default=60)
     parser.add_argument("--context-bars", type=int, default=36 * 60)
     parser.add_argument("--day-bars", type=int, default=24 * 60)
     args, _ = parser.parse_known_args()
-    value_columns = list(dict.fromkeys([*(args.value_columns or []), *( [args.value_column_2] if args.value_column_2 else [] )]))
+    raw_values = list(args.value_columns or [])
+    if args.value_column_2:
+        raw_values.append(args.value_column_2)
+    value_columns: list[str] = []
+    for entry in raw_values:
+        value_columns.extend(part.strip() for part in entry.split(",") if part.strip())
+    value_columns = list(dict.fromkeys(value_columns))
+
+    indicator_columns: list[str] = []
+    for entry in args.indicator_columns or []:
+        indicator_columns.extend(part.strip() for part in entry.split(",") if part.strip())
+    if args.anchor_column:
+        indicator_columns.extend(part.strip() for part in args.anchor_column.split(",") if part.strip())
+    indicator_columns = list(dict.fromkeys(indicator_columns))
     return TailAppConfig(
         minibar_path=Path(args.minibar).expanduser(),
         agg_trades_path=Path(args.agg_trades).expanduser() if args.agg_trades else None,
         value_columns=tuple(value_columns),
-        anchor_column=args.anchor_column,
+        indicator_columns=tuple(indicator_columns),
         window_bars=args.window_bars,
         step_bars=args.step_bars,
         context_bars=args.context_bars,
